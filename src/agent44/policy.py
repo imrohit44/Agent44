@@ -29,10 +29,11 @@ dotted field path or a "field is present" check.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
