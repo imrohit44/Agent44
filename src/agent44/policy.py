@@ -1,19 +1,27 @@
-"""Deterministic policy engine for Agent44 (Milestone 3).
+"""Deterministic policy engine for Agent44 (Milestone 4a).
 
 Loads a small, versioned YAML policy, validates it eagerly, and evaluates a
-typed ALLOW/DENY decision *before* a tool call is forwarded downstream.
+typed ALLOW/DENY/UNDECIDED decision *before* a tool call is forwarded
+downstream.
 
-Design rules:
-  * Evaluation is independent of MCP response construction:
-    ``PolicyEngine.evaluate`` returns a ``Decision`` and never builds
-    protocol objects.
-  * Deterministic precedence (highest first): explicit ``deny_tools`` >
-    matching DENY argument rules (first declared wins) > ``allow_tools`` >
-    matching ALLOW argument rules (first declared wins) > default action.
-  * Only ``ALLOW`` and ``DENY`` exist. ``REVIEW`` is deliberately not
-    modelled, so there is no silently-permissive fallback outcome.
-  * A missing or invalid policy raises ``PolicyError``. When enforcement is
-    enabled the proxy fails startup instead of running unprotected.
+Decision contract, highest precedence first:
+
+  * Hard-deny rules (explicit ``hard_deny_tools`` or rules with
+    ``hard: true``) > explicit ``deny_tools`` > matching DENY argument rules
+    (first declared wins) > ``allow_tools`` > matching ALLOW argument rules
+    (first declared wins) > adapter evaluation (only for calls explicitly
+    listed in ``adapter_tools``) > configured default.
+
+  * ``UNDECIDED`` is an internal outcome, never authorization to execute a
+    tool. Enforcement resolves it to ``DENY`` before any downstream call.
+  * Only calls explicitly configured via ``adapter_tools`` may reach a
+    decision adapter. Adapter errors, timeouts, missing adapters, and invalid
+    adapter outputs fail closed to ``DENY``.
+  * No adapter may override a hard-deny decision.
+
+Policy evaluation stays independent of MCP response construction:
+``PolicyEngine.evaluate`` returns a ``Decision`` and never builds protocol
+objects.
 
 No expression language: an argument rule is either an exact-value match on a
 dotted field path or a "field is present" check.
