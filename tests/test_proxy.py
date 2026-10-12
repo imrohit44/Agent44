@@ -45,6 +45,20 @@ async def proxy_session(
             yield session
 
 
+@asynccontextmanager
+async def observing_proxy_session(
+    observe_path: Path,
+) -> AsyncIterator[ClientSession]:
+    """Yield an initialized session whose proxy writes observations to a file."""
+    args = [*PROXY_MODULE, "--observe", str(observe_path), "--", sys.executable, *DEMO_MODULE]
+    params = StdioServerParameters(command=sys.executable, args=args)
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            yield session
+
+
+
 @pytest.mark.asyncio
 async def test_upstream_initialization_succeeds() -> None:
     async with proxy_session() as session:
@@ -221,3 +235,104 @@ async def test_stdout_is_not_polluted_by_logging() -> None:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+# --- Observation does not change proxy behavior (Milestone 2) -------------
+
+
+@pytest.mark.asyncio
+async def test_observation_preserves_call_results(tmp_path: Path) -> None:
+    observe_path = tmp_path / "obs.jsonl"
+    async with observing_proxy_session(observe_path) as session:
+        result = await session.call_tool("add", {"a": 2, "b": 3})
+        assert result.isError is False
+        assert [c.text for c in result.content if c.type == "text"] == ["5"]
+        assert result.structuredContent == {"result": 5}
+
+
+@pytest.mark.asyncio
+async def test_observation_writes_events_without_raw_values(tmp_path: Path) -> None:
+    from agent44.observe import JsonlObserver
+
+    observe_path = tmp_path / "obs.jsonl"
+    secret = "sk-live-do-not-log-this"
+    async with observing_proxy_session(observe_path) as session:
+        await session.call_tool("echo", {"message": secret, "api_key": secret})
+
+    events = JsonlObserver(observe_path).read_events()
+    assert len(events) >= 1
+    joined = json.dumps(events)
+    # Raw argument values and secrets must never be persisted.
+    assert secret not in joined
+    tool_events = [e for e in events if e["tool_name"] == "echo"]
+    assert tool_events
+    ev = tool_events[-1]
+    assert ev["event_type"] == "tool_call"
+    assert ev["outcome"] in {"success", "error", "timeout"}
+    assert "latency_ms" in ev
+    assert ev["safe_arguments"]["message"] == {"type": "str", "length": len(secret)}
+    assert ev["safe_arguments"]["api_key"] == {"redacted": True}
+
+
+@pytest.mark.asyncio
+async def test_observation_does_not_leak_to_stdout(tmp_path: Path) -> None:
+    # The raw-subprocess stdout purity check must still hold when --observe is
+    # enabled: observations go to the file, logging to stderr, stdout stays clean.
+    observe_path = tmp_path / "obs.jsonl"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            *PROXY_MODULE,
+            "--observe",
+            str(observe_path),
+            "--",
+            sys.executable,
+            *DEMO_MODULE,
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        cwd=str(Path(__file__).resolve().parent.parent),
+    )
+
+    def send(obj: dict[str, object]) -> None:
+        assert proc.stdin is not None
+        proc.stdin.write((json.dumps(obj) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    try:
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                },
+            }
+        )
+        assert proc.stdout is not None
+        json.loads(proc.stdout.readline().decode("utf-8").strip())
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "add", "arguments": {"a": 1, "b": 1}},
+            }
+        )
+        line = proc.stdout.readline().decode("utf-8").strip()
+        parsed = json.loads(line)  # must remain valid JSON-RPC
+        assert "result" in parsed
+    finally:
+        assert proc.stdin is not None
+        proc.stdin.close()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    # Observation landed in the file, not stdout.
+    assert observe_path.exists()

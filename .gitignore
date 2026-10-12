@@ -25,3 +25,5 @@ env/
 *.log
 uv.lock.bak
 smoke.py
+eval_results.json
+eval_observations.jsonl
