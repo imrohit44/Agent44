@@ -48,6 +48,7 @@ class Action(StrEnum):
 
     ALLOW = "ALLOW"
     DENY = "DENY"
+    UNDECIDED = "UNDECIDED"
 
 
 class Decision(BaseModel):
