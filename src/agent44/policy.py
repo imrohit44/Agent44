@@ -44,7 +44,17 @@ _FIELD_SEGMENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _FIELD_PATH_RE = re.compile(rf"^{_FIELD_SEGMENT}(\.{_FIELD_SEGMENT})*$")
 
 _POLICY_KEYS = frozenset(
-    {"version", "name", "default_deny", "allow_tools", "deny_tools", "rules"}
+    {
+        "version",
+        "name",
+        "default_deny",
+        "default",
+        "allow_tools",
+        "deny_tools",
+        "hard_deny_tools",
+        "adapter_tools",
+        "rules",
+    }
 )
 
 
@@ -120,6 +130,7 @@ class PolicyRule(BaseModel):
     id: str
     tool: str
     action: Action
+    hard: bool = False
     reason: str
     when: Condition
 
@@ -136,6 +147,13 @@ class PolicyRule(BaseModel):
             raise ValueError(f"rule '{self.id}': 'tool' must be non-empty")
         if not self.reason.strip():
             raise ValueError(f"rule '{self.id}': 'reason' must be non-empty")
+        if self.action is Action.UNDECIDED:
+            raise ValueError(
+                f"rule '{self.id}': 'action' must be ALLOW or DENY; "
+                "UNDECIDED is an internal evaluation state"
+            )
+        if self.hard and self.action is not Action.DENY:
+            raise ValueError(f"rule '{self.id}': 'hard' requires action DENY")
         return self
 
     def matches(self, tool_name: str, arguments: dict[str, Any]) -> bool:
@@ -148,8 +166,11 @@ class Policy(BaseModel):
     version: str
     name: str = "unnamed-policy"
     default_deny: bool = False
+    default: Action | None = None
     allow_tools: list[str] = Field(default_factory=list)
     deny_tools: list[str] = Field(default_factory=list)
+    hard_deny_tools: list[str] = Field(default_factory=list)
+    adapter_tools: list[str] = Field(default_factory=list)
     rules: list[PolicyRule] = Field(default_factory=list)
 
     @field_validator("version", mode="before")
@@ -161,12 +182,32 @@ class Policy(BaseModel):
             raise ValueError(f"unsupported policy version {value!r}; supported: {supported}")
         return text
 
+    @field_validator("default", mode="before")
+    @classmethod
+    def _normalize_default(cls, value: Any) -> Any:
+        return value.upper() if isinstance(value, str) else value
+
     @model_validator(mode="after")
     def _reject_conflicts(self) -> Policy:
+        if self.default is not None and "default_deny" in self.model_fields_set:
+            raise ValueError("specify only one of 'default' and 'default_deny'")
+        if self.default is Action.UNDECIDED:
+            raise ValueError("'default' must be ALLOW or DENY, not UNDECIDED")
         both = sorted(set(self.allow_tools) & set(self.deny_tools))
         if both:
             raise ValueError(f"tools listed in both allow_tools and deny_tools: {both}")
-        for label, tools in (("allow_tools", self.allow_tools), ("deny_tools", self.deny_tools)):
+        hard_conflict = sorted(set(self.hard_deny_tools) & set(self.allow_tools))
+        if hard_conflict:
+            raise ValueError(
+                f"tools listed in both hard_deny_tools and allow_tools: {hard_conflict}"
+            )
+        tool_lists = (
+            ("allow_tools", self.allow_tools),
+            ("deny_tools", self.deny_tools),
+            ("hard_deny_tools", self.hard_deny_tools),
+            ("adapter_tools", self.adapter_tools),
+        )
+        for label, tools in tool_lists:
             if len(set(tools)) != len(tools):
                 raise ValueError(f"duplicate entries in {label}")
         rule_ids = [rule.id for rule in self.rules]
@@ -174,6 +215,20 @@ class Policy(BaseModel):
         if duplicated:
             raise ValueError(f"duplicate rule ids: {duplicated}")
         return self
+
+    @property
+    def default_action(self) -> Action:
+        """The configured default outcome, exposed for the engine.
+
+        An explicit ``default`` wins; otherwise an explicitly set
+        ``default_deny`` keeps its legacy meaning; a policy that configures
+        neither gets the safe default DENY.
+        """
+        if self.default is not None:
+            return self.default
+        if "default_deny" in self.model_fields_set:
+            return Action.DENY if self.default_deny else Action.ALLOW
+        return Action.DENY
 
 def load_policy(path: str | Path) -> Policy:
     """Read and validate a YAML policy file, raising ``PolicyError`` on any problem.
