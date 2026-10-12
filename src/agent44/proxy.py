@@ -28,6 +28,7 @@ from mcp.server.stdio import stdio_server
 
 from agent44 import observe
 from agent44.observe import JsonlObserver
+from agent44.policy import Action, Decision, PolicyEngine, PolicyError
 
 logger = logging.getLogger("agent44.proxy")
 
@@ -44,11 +45,13 @@ class ProxyState:
     session: ClientSession
     params: StdioServerParameters
     observer: JsonlObserver | None = None
+    policy: PolicyEngine | None = None
 
 
 def build_server(
     params: StdioServerParameters,
     observer: JsonlObserver | None = None,
+    policy: PolicyEngine | None = None,
 ) -> Server:
     """Create a low-level MCP server that proxies the given downstream server.
 
@@ -56,6 +59,11 @@ def build_server(
     lifespan, and reused for every upstream request on this connection. An
     optional ``observer`` records non-intrusive observations of tool calls;
     it never changes results, error semantics, or protocol behavior.
+
+    When ``policy`` is provided, enforcement is enabled: each ``tools/call``
+    is evaluated *before* it is forwarded, and a DENY decision returns a
+    tool-level error without ever invoking the downstream server. Without a
+    policy the proxy stays in observation-only mode.
     """
 
     @asynccontextmanager
@@ -74,7 +82,9 @@ def build_server(
                             f"{DOWNSTREAM_INIT_TIMEOUT_SECONDS}s"
                         ) from exc
                     logger.info("downstream server initialized")
-                    yield ProxyState(session=session, params=params, observer=observer)
+                    yield ProxyState(
+                        session=session, params=params, observer=observer, policy=policy
+                    )
         except (OSError, RuntimeError) as exc:
             # Startup / initialization failure: surface a clear, diagnosable
             # error instead of hanging or silently succeeding.
@@ -112,6 +122,47 @@ def build_server(
         except Exception:  # noqa: BLE001 - observation must never break the call
             logger.exception("failed to build observation context; continuing")
 
+        # Evaluate the policy *before* forwarding. Any evaluation failure
+        # fails closed: enforcement must never silently become a no-op.
+        decision: Decision | None = None
+        if state.policy is not None:
+            try:
+                decision = state.policy.evaluate(name, arguments)
+            except Exception:  # noqa: BLE001 - enforcement must fail closed
+                logger.exception("policy evaluation failed; denying call")
+                decision = Decision(
+                    action=Action.DENY,
+                    reason="policy evaluation failed; call denied",
+                    rule_id="fail_closed",
+                    policy_id=state.policy.policy_id,
+                    policy_version=state.policy.policy_version,
+                )
+
+        if decision is not None and decision.action is Action.DENY:
+            # Record the denial, then return a tool-level error. The
+            # downstream server is never invoked for a denied call.
+            if context is not None:
+                observe.record_observation(
+                    state.observer,
+                    context,
+                    started=started,
+                    outcome="denied",
+                    is_error=True,
+                    policy_action=decision.action.value,
+                    policy_rule_id=decision.rule_id,
+                    policy_reason=decision.reason,
+                )
+            # Reason only: raw argument values are never echoed back.
+            return types.CallToolResult(
+                content=[
+                    types.TextContent(
+                        type="text",
+                        text=f"denied by policy ({decision.rule_id}): {decision.reason}",
+                    )
+                ],
+                isError=True,
+            )
+
         try:
             with anyio.fail_after(DOWNSTREAM_CALL_TIMEOUT_SECONDS):
                 result = await state.session.call_tool(name, arguments)
@@ -123,6 +174,9 @@ def build_server(
                     started=started,
                     outcome="timeout",
                     is_error=True,
+                    policy_action=None if decision is None else decision.action.value,
+                    policy_rule_id=None if decision is None else decision.rule_id,
+                    policy_reason=None if decision is None else decision.reason,
                 )
             raise RuntimeError(
                 f"downstream tool call '{name}' timed out after {DOWNSTREAM_CALL_TIMEOUT_SECONDS}s"
@@ -138,6 +192,9 @@ def build_server(
                 started=started,
                 outcome=outcome,
                 is_error=bool(result.isError),
+                policy_action=None if decision is None else decision.action.value,
+                policy_rule_id=None if decision is None else decision.rule_id,
+                policy_reason=None if decision is None else decision.reason,
             )
 
         # Return the downstream CallToolResult unchanged so that text and
@@ -149,12 +206,16 @@ def build_server(
 
 def parse_downstream_args(
     argv: list[str],
-) -> tuple[StdioServerParameters, JsonlObserver | None]:
-    """Split CLI arguments into the downstream command and optional observer.
+) -> tuple[StdioServerParameters, JsonlObserver | None, PolicyEngine | None]:
+    """Split CLI arguments into the downstream command, observer, and policy.
 
-    Accepts: [--observe PATH] -- <command> [args...]
+    Accepts: [--observe PATH] [--policy PATH] -- <command> [args...]
     Everything after ``--`` is the downstream server command and its arguments.
-    ``--observe PATH`` (if given) enables JSONL observation of tool calls.
+
+    * ``--observe PATH`` enables JSONL observation of tool calls.
+    * ``--policy PATH`` enables enforcement. A missing or invalid policy file
+      raises :class:`PolicyError` so that startup fails loudly instead of
+      silently disabling enforcement.
     """
     parser = argparse.ArgumentParser(
         prog="agent44",
@@ -168,6 +229,12 @@ def parse_downstream_args(
         metavar="PATH",
         default=None,
         help="Optional JSONL file to record non-intrusive tool-call observations.",
+    )
+    parser.add_argument(
+        "--policy",
+        metavar="PATH",
+        default=None,
+        help="YAML policy file; enables ALLOW/DENY enforcement of tool calls.",
     )
     parser.add_argument(
         "command",
@@ -185,11 +252,17 @@ def parse_downstream_args(
 
     params = StdioServerParameters(command=downstream[0], args=downstream[1:])
     observer = JsonlObserver(args.observe) if args.observe else None
-    return params, observer
+    # Raises PolicyError when --policy is given but the file is unusable.
+    policy = PolicyEngine.from_path(args.policy) if args.policy else None
+    return params, observer, policy
 
 
-async def _run(params: StdioServerParameters, observer: JsonlObserver | None) -> None:
-    server = build_server(params, observer=observer)
+async def _run(
+    params: StdioServerParameters,
+    observer: JsonlObserver | None,
+    policy: PolicyEngine | None,
+) -> None:
+    server = build_server(params, observer=observer, policy=policy)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
@@ -206,12 +279,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     argv = sys.argv[1:] if argv is None else argv
     try:
-        params, observer = parse_downstream_args(argv)
+        params, observer, policy = parse_downstream_args(argv)
     except SystemExit as exc:  # argparse already printed the message to stderr
         return int(exc.code or 2)
+    except PolicyError as exc:
+        # Enforcement was requested but the policy is unusable: refuse to
+        # start rather than run without a policy.
+        print(f"agent44: policy error: {exc}", file=sys.stderr)
+        return 2
 
     try:
-        anyio.run(_run, params, observer)
+        anyio.run(_run, params, observer, policy)
     except Exception as exc:  # pragma: no cover - defensive top-level guard
         logger.error("proxy terminated with error: %s", exc)
         return 1

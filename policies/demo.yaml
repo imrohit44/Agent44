@@ -1,0 +1,44 @@
+# Agent44 demo policy — illustrative, least-privilege policy for the demo
+# server. Deterministic precedence, highest first:
+#   1. deny_tools            (explicit tool-level deny)
+#   2. DENY argument rules   (first declared match wins)
+#   3. allow_tools           (explicit tool-level allow)
+#   4. ALLOW argument rules  (first declared match wins)
+#   5. default               (DENY, because default_deny is true)
+
+version: "1"
+name: demo-policy
+default_deny: true
+
+allow_tools:
+  - add
+  - echo
+
+deny_tools:
+  - shell_exec
+  - rm_rf
+
+rules:
+  - id: deny-eval-flag
+    tool: echo
+    action: DENY
+    reason: "argument 'eval' is not permitted on echo"
+    when:
+      field: eval
+      field_exists: true
+
+  - id: deny-nested-token
+    tool: echo
+    action: DENY
+    reason: "nested credential field is not permitted"
+    when:
+      field: auth.token
+      field_exists: true
+
+  - id: deny-message-literal
+    tool: echo
+    action: DENY
+    reason: "message matches a blocked literal value"
+    when:
+      field: message
+      equals: "DROP TABLE users"

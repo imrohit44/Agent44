@@ -177,6 +177,9 @@ class ObservationEvent:
     client_version: str | None = None
     protocol_version: str | None = None
     request_id: str | int | None = None
+    policy_action: str | None = None
+    policy_rule_id: str | None = None
+    policy_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -192,6 +195,9 @@ class ObservationEvent:
             "client_version": self.client_version,
             "protocol_version": self.protocol_version,
             "request_id": self.request_id,
+            "policy_action": self.policy_action,
+            "policy_rule_id": self.policy_rule_id,
+            "policy_reason": self.policy_reason,
         }
 
     def to_json(self) -> str:
@@ -207,6 +213,9 @@ class ObservationEvent:
         is_error: bool,
         sensitive_fields: frozenset[str] | set[str] = DEFAULT_SENSITIVE_FIELDS,
         event_type: str = "tool_call",
+        policy_action: str | None = None,
+        policy_rule_id: str | None = None,
+        policy_reason: str | None = None,
     ) -> ObservationEvent:
         return cls(
             event_type=event_type,
@@ -220,6 +229,9 @@ class ObservationEvent:
             client_version=context.client_version,
             protocol_version=context.protocol_version,
             request_id=context.request_id,
+            policy_action=policy_action,
+            policy_rule_id=policy_rule_id,
+            policy_reason=policy_reason,
         )
 
 
@@ -256,6 +268,9 @@ def record_observation(
     outcome: str,
     is_error: bool,
     sensitive_fields: frozenset[str] | set[str] = DEFAULT_SENSITIVE_FIELDS,
+    policy_action: str | None = None,
+    policy_rule_id: str | None = None,
+    policy_reason: str | None = None,
 ) -> None:
     """Record one observation, never raising.
 
@@ -274,6 +289,9 @@ def record_observation(
             latency_ms=latency_ms,
             is_error=is_error,
             sensitive_fields=sensitive_fields,
+            policy_action=policy_action,
+            policy_rule_id=policy_rule_id,
+            policy_reason=policy_reason,
         )
         observer.observe(event)
     except Exception:  # noqa: BLE001 - observation must never break the call
