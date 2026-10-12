@@ -1,0 +1,39 @@
+[project]
+name = "agent44"
+version = "0.1.0"
+description = "Agent44 — Milestone 1: a transparent MCP stdio proxy"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "mcp==1.30.0",
+    "pydantic>=2.10,<3",
+]
+
+[project.scripts]
+agent44 = "agent44.proxy:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent44"]
+
+[dependency-groups]
+dev = [
+    "psutil>=7.2.2",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
