@@ -63,7 +63,12 @@ class PolicyError(ValueError):
 
 
 class Action(StrEnum):
-    """The only two policy outcomes."""
+    """The three decision states.
+
+    ALLOW and DENY are final authorizations. UNDECIDED is an internal
+    outcome only: it is never authorization to execute a tool, and
+    enforcement resolves it to DENY before any downstream call.
+    """
 
     ALLOW = "ALLOW"
     DENY = "DENY"
@@ -343,12 +348,13 @@ class PolicyEngine:
     def policy_version(self) -> str:
         return self.policy.version
 
-    def evaluate(self, tool_name: str, arguments: dict[str, Any] | None) -> Decision:
-        """Return the ALLOW/DENY decision for one tool call.
+    def match_rules(self, tool_name: str, arguments: dict[str, Any] | None) -> Decision | None:
+        """Apply the deterministic tiers; return ``None`` when none matches.
 
-        Precedence, highest first: explicit deny list, then DENY argument
-        rules in declaration order, then explicit allow list, then ALLOW
-        argument rules in declaration order, then the configured default.
+        Precedence, highest first: ``hard_deny_tools``, matching hard DENY
+        rules, ``deny_tools``, matching DENY argument rules, ``allow_tools``,
+        matching ALLOW argument rules. Pure and synchronous: never consults
+        an adapter.
         """
         policy = self.policy
         args = dict(arguments or {})
@@ -356,6 +362,23 @@ class PolicyEngine:
             "policy_id": policy.name,
             "policy_version": policy.version,
         }
+
+        if tool_name in set(policy.hard_deny_tools):
+            return Decision(
+                action=Action.DENY,
+                reason=f"tool '{tool_name}' is hard-denied by policy",
+                rule_id="hard_deny_tools",
+                **base,
+            )
+
+        for rule in policy.rules:
+            if rule.hard and rule.action is Action.DENY and rule.matches(tool_name, args):
+                return Decision(
+                    action=Action.DENY,
+                    reason=rule.reason,
+                    rule_id=rule.id,
+                    **base,
+                )
 
         if tool_name in set(policy.deny_tools):
             return Decision(
@@ -366,7 +389,11 @@ class PolicyEngine:
             )
 
         for rule in policy.rules:
-            if rule.action is Action.DENY and rule.matches(tool_name, args):
+            if (
+                not rule.hard
+                and rule.action is Action.DENY
+                and rule.matches(tool_name, args)
+            ):
                 return Decision(
                     action=Action.DENY,
                     reason=rule.reason,
@@ -383,26 +410,146 @@ class PolicyEngine:
             )
 
         for rule in policy.rules:
-            if rule.action is Action.ALLOW and rule.matches(tool_name, args):
+            if (
+                not rule.hard
+                and rule.action is Action.ALLOW
+                and rule.matches(tool_name, args)
+            ):
                 return Decision(
                     action=Action.ALLOW,
                     reason=rule.reason,
                     rule_id=rule.id,
                     **base,
                 )
+        return None
 
-        if policy.default_deny:
+    def _default_decision(self, tool_name: str, adapter: DecisionAdapter | None) -> Decision:
+        """Return the configured-default outcome for one tool call."""
+        policy = self.policy
+        base: dict[str, Any] = {
+            "policy_id": policy.name,
+            "policy_version": policy.version,
+        }
+        action = policy.default_action
+        if action is Action.DENY:
+            if policy.default is None and "default_deny" in policy.model_fields_set:
+                return Decision(
+                    action=Action.DENY,
+                    reason="no rule matched and default_deny is enabled",
+                    rule_id="default_deny",
+                    **base,
+                )
             return Decision(
                 action=Action.DENY,
-                reason="no rule matched and default_deny is enabled",
-                rule_id="default_deny",
+                reason="no rule matched and the policy default is deny",
+                rule_id="default:deny",
+                **base,
+            )
+        if policy.default is None and "default_deny" in policy.model_fields_set:
+            return Decision(
+                action=Action.ALLOW,
+                reason="no rule matched and default_deny is disabled",
+                rule_id="default_allow",
                 **base,
             )
         return Decision(
             action=Action.ALLOW,
-            reason="no rule matched and default_deny is disabled",
-            rule_id="default_allow",
+            reason="no rule matched and the policy default is allow",
+            rule_id="default:allow",
             **base,
         )
 
+    def _adapter_rules(self) -> list[PolicyRule]:
+        """Return the rule subset an adapter may consult.
+
+        Hard rules decide before the adapter tier and are never passed on,
+        so no adapter can reinterpret or override a hard-deny decision.
+        """
+        return [rule for rule in self.policy.rules if not rule.hard]
+
+    @staticmethod
+    def _adapter_failure(
+        tool_name: str, reason: str, rule_id: str, policy: Policy
+    ) -> Decision:
+        """Build a fail-closed DENY with static, value-free reason text."""
+        return Decision(
+            action=Action.DENY,
+            reason=f"adapter decision for tool '{tool_name}' {reason}; call denied",
+            rule_id=rule_id,
+            policy_id=policy.name,
+            policy_version=policy.version,
+        )
+
+    async def decide(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None,
+        adapter: DecisionAdapter | None = None,
+    ) -> Decision:
+
+
+        """Apply the full Milestone 4a decision contract for one tool call.
+
+        Deterministic tiers run first via :meth:`match_rules`. Only when no
+        tier matches, the tool is explicitly listed in ``adapter_tools``, and
+        an adapter is configured is the adapter consulted (bounded by
+        ``ADAPTER_TIMEOUT_SECONDS``). Adapter failures, invalid outputs, and
+        ``UNDECIDED`` all fail closed to ``DENY``. Unresolved calls fall
+        through to the configured policy default. Never returns ``UNDECIDED``.
+        """
+        policy = self.policy
+        matched = self.match_rules(tool_name, arguments)
+        if matched is not None:
+            return matched
+
+        args = dict(arguments or {})
+        if tool_name in set(policy.adapter_tools) and adapter is not None:
+            try:
+                raw = await asyncio.wait_for(
+                    adapter.decide(tool_name, args, self._adapter_rules()),
+                    timeout=ADAPTER_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                return self._adapter_failure(tool_name, "timed out", "adapter_timeout", policy)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return self._adapter_failure(tool_name, "raised an error", "adapter_error", policy)
+            if not isinstance(raw, AdapterDecision):
+                return self._adapter_failure(
+                    tool_name, "returned an invalid decision", "adapter_invalid", policy
+                )
+            if raw.action is Action.ALLOW:
+                return Decision(
+                    action=Action.ALLOW,
+                    reason=raw.reason,
+                    rule_id=raw.rule_id or "adapter",
+                    policy_id=policy.name,
+                    policy_version=policy.version,
+                )
+            if raw.action is Action.DENY:
+                return Decision(
+                    action=Action.DENY,
+                    reason=raw.reason,
+                    rule_id=raw.rule_id or "adapter",
+                    policy_id=policy.name,
+                    policy_version=policy.version,
+                )
+            return self._adapter_failure(
+                tool_name, "was undecided", "adapter_undecided", policy
+            )
+
+        return self._default_decision(tool_name, adapter)
+
+    def evaluate(self, tool_name: str, arguments: dict[str, Any] | None) -> Decision:
+        """Return the ALLOW/DENY decision for one tool call.
+
+        Synchronous compatibility entry point: applies the deterministic
+        tiers and the configured default without consulting any adapter.
+        Never returns ``UNDECIDED``.
+        """
+        matched = self.match_rules(tool_name, arguments)
+        if matched is not None:
+            return matched
+        return self._default_decision(tool_name, None)
 
