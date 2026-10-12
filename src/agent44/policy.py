@@ -200,6 +200,75 @@ def load_policy(path: str | Path) -> Policy:
         raise PolicyError(f"invalid policy {policy_path}: {exc}") from exc
 
 
+ADAPTER_TIMEOUT_SECONDS = 5.0
+"""Maximum time the engine waits for one adapter call before failing closed."""
+
+
+class AdapterDecision(BaseModel):
+    """A decision returned by a :class:`DecisionAdapter`.
+
+    Reuses :class:`Action`, so adapters speak the same three-state language
+    as the engine. ``UNDECIDED`` is an internal outcome: it is never
+    authorization to execute a tool, and enforcement resolves it to ``DENY``.
+    """
+
+    action: Action
+    reason: str
+    rule_id: str | None = None
+
+
+@runtime_checkable
+class DecisionAdapter(Protocol):
+    """Interface for an auxiliary decision backend consulted by the engine.
+
+    The engine consults an adapter only for calls explicitly configured via
+    ``adapter_tools``, only after the deterministic tiers produced no
+    decision, and never for a call a hard-deny rule already denied. Adapter
+    failures (exceptions, timeouts, invalid outputs) fail closed to ``DENY``.
+    """
+
+    async def decide(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        rules: list[PolicyRule],
+    ) -> AdapterDecision:
+        """Return ALLOW, DENY, or UNDECIDED for one tool call."""
+        ...
+
+
+class RulesOnlyAdapter(DecisionAdapter):
+    """Reference adapter that follows only deterministic ``PolicyRule``s.
+
+    Replays deterministic precedence over the provided rules: the first
+    matching DENY rule wins, then the first matching ALLOW rule. When no
+    rule matches it returns ``UNDECIDED`` rather than inventing
+    authorization.
+    """
+
+    async def decide(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        rules: list[PolicyRule],
+    ) -> AdapterDecision:
+        args = dict(arguments or {})
+        for rule in rules:
+            if rule.action is Action.DENY and rule.matches(tool_name, args):
+                return AdapterDecision(
+                    action=Action.DENY, reason=rule.reason, rule_id=rule.id
+                )
+        for rule in rules:
+            if rule.action is Action.ALLOW and rule.matches(tool_name, args):
+                return AdapterDecision(
+                    action=Action.ALLOW, reason=rule.reason, rule_id=rule.id
+                )
+        return AdapterDecision(
+            action=Action.UNDECIDED,
+            reason=f"no adapter rule matched tool '{tool_name}'",
+        )
+
+
 class PolicyEngine:
     """Deterministic evaluator over a validated ``Policy``."""
 
