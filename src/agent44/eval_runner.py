@@ -19,7 +19,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -150,6 +153,35 @@ def _rate(numerator: int, denominator: int) -> float | None:
     return numerator / denominator
 
 
+def _percentiles(values: list[float]) -> dict[str, float | int | None]:
+    """Return min/p50/p95/max percentiles (protocol §10), or ``None`` if empty.
+
+    Uses linear interpolation (the same method as ``statistics.quantiles`` with
+    ``method="inclusive"``). Percentiles are only meaningful over executed
+    cases; the caller must pass executed-case latencies only.
+    """
+    if not values:
+        return {"count": 0, "min": None, "p50": None, "p95": None, "max": None}
+    ordered = sorted(values)
+    n = len(ordered)
+
+    def pct(p: float) -> float:
+        # inclusive (linear) interpolation on 0-indexed rank
+        rank = p * (n - 1)
+        lo = int(rank)
+        hi = min(lo + 1, n - 1)
+        frac = rank - lo
+        return ordered[lo] + (ordered[hi] - ordered[lo]) * frac
+
+    return {
+        "count": n,
+        "min": ordered[0],
+        "p50": round(pct(0.50), 3),
+        "p95": round(pct(0.95), 3),
+        "max": ordered[-1],
+    }
+
+
 def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate per-case records into protocol section 7 metrics."""
     total = len(results)
@@ -216,6 +248,15 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
             key = str(r["adapter_outcome"])
             adapter_outcomes[key] = adapter_outcomes.get(key, 0) + 1
 
+    # Latency percentiles over executed cases only. This is client-observed
+    # wall clock (protocol §10 client_observed_ms): it includes gateway policy
+    # evaluation and result shaping. For offline rules-only and replay runs it
+    # is NOT a measure of model-inference latency and must not be presented as
+    # such. Downstream-only timing is not separated in this harness.
+    executed_latencies = [
+        float(r["latency_ms"]) for r in results if r["error"] is None
+    ]
+
     hard_rows = [r for r in results if r["category"] == "hard-deny"]
     hard_overrides = sum(
         1
@@ -247,6 +288,12 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
         "hard_deny_overrides": hard_overrides,
         "by_category": by_category,
         "adapter_outcomes": adapter_outcomes,
+        "latency_ms": _percentiles(executed_latencies),
+        "latency_note": (
+            "client_observed_ms wall clock over executed cases; includes "
+            "gateway overhead. Offline rules-only/replay timing is NOT model "
+            "inference latency."
+        ),
         "completed": failed == 0,
     }
 
@@ -258,36 +305,51 @@ async def evaluate(
     adapter_replay: str | Path | None = None,
     timeout_seconds: float = 30.0,
 ) -> dict[str, Any]:
-    """Run the corpus through the enforcing proxy and return the report."""
+    """Run the corpus through the enforcing proxy and return the report.
+
+    ``observe_path`` is an optional caller-facing JSONL copy; the runner
+    always uses its own temporary observation file as the authoritative
+    decision source so runs are self-contained and reproducible.
+    """
     corpus.validate_cases(list(corpus.CASES))
     policy = str(policy_path) if policy_path is not None else str(EVAL_POLICY)
     cases = corpus.load_corpus()  # stable corpus order; no shuffling
-    proxy_args = [*PROXY_MODULE, "--policy", policy]
-    if observe_path:
-        proxy_args += ["--observe", observe_path]
-    if adapter_replay:
-        proxy_args += ["--adapter-replay", str(adapter_replay)]
-    proxy_args += ["--", sys.executable, *DEMO_MODULE]
-    params = StdioServerParameters(command=sys.executable, args=proxy_args)
 
-    # The runner reads the proxy's own JSONL observation log for the
-    # authoritative per-call decision. It always uses its own file so the
-    # run is self-contained and reproducible regardless of the caller's
-    # --observe choice.
-    observer = JsonlObserver(observe_path) if observe_path else None
-    results: list[dict[str, Any]] = []
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            for case in cases:
-                results.append(
-                    await _run_case(
-                        session,
-                        case,
-                        observer,
-                        timeout_seconds=timeout_seconds,
+    # The proxy's JSONL observation log is the authoritative per-call decision
+    # source. The runner ALWAYS runs the proxy with its own observation file so
+    # the run is self-contained and reproducible regardless of whether the
+    # caller supplied observe_path. The runner reads only its own file; a
+    # caller-facing copy is written afterward if observe_path was given.
+    with tempfile.TemporaryDirectory() as tmp:
+        run_observe = os.path.join(tmp, "run_observations.jsonl")
+        proxy_args = [*PROXY_MODULE, "--policy", policy, "--observe", run_observe]
+        if adapter_replay:
+            proxy_args += ["--adapter-replay", str(adapter_replay)]
+        proxy_args += ["--", sys.executable, *DEMO_MODULE]
+        params = StdioServerParameters(command=sys.executable, args=proxy_args)
+        observer = JsonlObserver(run_observe)
+
+        results: list[dict[str, Any]] = []
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                for case in cases:
+                    results.append(
+                        await _run_case(
+                            session,
+                            case,
+                            observer,
+                            timeout_seconds=timeout_seconds,
+                        )
                     )
-                )
+
+        # If the caller requested a specific observation log, copy the run's
+        # observations there (best-effort; never affects the run outcome).
+        if observe_path:
+            try:
+                shutil.copyfile(run_observe, str(observe_path))
+            except OSError:
+                pass
 
     mode = "adapter-replay" if adapter_replay else "rules-only"
     return {
