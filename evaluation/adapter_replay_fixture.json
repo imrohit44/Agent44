@@ -1,0 +1,27 @@
+{
+  "review_tool:38667e60226bf99701916900a2a265233dcc014e1206c173ade921d608824b53": {
+    "action": "DENY",
+    "reason": "replayed model decision for adapter-undecided-01",
+    "rule_id": "adapter_replay"
+  },
+  "review_tool:42034609335647ec182daf70643632d0b1d0f369a5c6c890276e7e8298734403": {
+    "action": "DENY",
+    "reason": "replayed model decision for adapter-grant-flag-false-01",
+    "rule_id": "adapter_replay"
+  },
+  "review_tool:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a": {
+    "action": "DENY",
+    "reason": "replayed model decision for adapter-missing-tool-arg-01",
+    "rule_id": "adapter_replay"
+  },
+  "review_tool:7000aa61eb8effaf7cb37d7d9438d95b580176ce1c437a5962e6fb96d1556ee3": {
+    "action": "DENY",
+    "reason": "replayed model decision for adapter-undecided-02",
+    "rule_id": "adapter_replay"
+  },
+  "review_tool:938830f98da641196634387540e3ddd20a6f7eb6ef563417c791f8921a7fc1bf": {
+    "action": "DENY",
+    "reason": "replayed model decision for adapter-failure-missing-02",
+    "rule_id": "adapter_replay"
+  }
+}

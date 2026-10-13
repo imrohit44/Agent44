@@ -28,6 +28,7 @@ from mcp.client.stdio import stdio_client
 
 from agent44 import corpus
 from agent44.corpus import CorpusCase
+from agent44.observe import JsonlObserver
 
 PROXY_MODULE = ["-m", "agent44.proxy"]
 DEMO_MODULE = ["-m", "agent44.demo_server"]
@@ -93,7 +94,7 @@ async def _run_case(
         if is_error and "policy evaluation failed" in detail:
             blocked = True
             error = "evaluation_error"
-        elif is_error and detail.startswith("Blocked by policy:"):
+        elif is_error and detail.startswith("denied by policy ("):
             blocked = True
         elif is_error:
             blocked = False
@@ -250,14 +251,11 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-async def __evaluate_placeholder() -> None:
-    raise NotImplementedError
-
-
 async def evaluate(
     observe_path: str | None = None,
     *,
     policy_path: str | Path | None = None,
+    adapter_replay: str | Path | None = None,
     timeout_seconds: float = 30.0,
 ) -> dict[str, Any]:
     """Run the corpus through the enforcing proxy and return the report."""
@@ -267,9 +265,16 @@ async def evaluate(
     proxy_args = [*PROXY_MODULE, "--policy", policy]
     if observe_path:
         proxy_args += ["--observe", observe_path]
+    if adapter_replay:
+        proxy_args += ["--adapter-replay", str(adapter_replay)]
     proxy_args += ["--", sys.executable, *DEMO_MODULE]
     params = StdioServerParameters(command=sys.executable, args=proxy_args)
 
+    # The runner reads the proxy's own JSONL observation log for the
+    # authoritative per-call decision. It always uses its own file so the
+    # run is self-contained and reproducible regardless of the caller's
+    # --observe choice.
+    observer = JsonlObserver(observe_path) if observe_path else None
     results: list[dict[str, Any]] = []
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -277,15 +282,19 @@ async def evaluate(
             for case in cases:
                 results.append(
                     await _run_case(
-                        session, case, observer,
+                        session,
+                        case,
+                        observer,
                         timeout_seconds=timeout_seconds,
                     )
                 )
 
+    mode = "adapter-replay" if adapter_replay else "rules-only"
     return {
         "corpus_version": corpus.CORPUS_VERSION,
         "policy": policy,
-        "mode": "policy-enforced",
+        "mode": mode,
+        "adapter_replay": str(adapter_replay) if adapter_replay else None,
         "blocking": True,
         "attack_success": None,
         "note": (
@@ -311,9 +320,19 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Optional JSONL observation log to enable while evaluating.",
     )
+    parser.add_argument(
+        "--adapter-replay",
+        default=None,
+        help=(
+            "Optional JSON replay fixture. When set, the proxy decides "
+            "adapter-tier tool calls by replaying recorded decisions."
+        ),
+    )
     args = parser.parse_args(argv)
 
-    report = asyncio.run(evaluate(observe_path=args.observe))
+    report = asyncio.run(
+        evaluate(observe_path=args.observe, adapter_replay=args.adapter_replay)
+    )
     out_path = Path(args.output)
     out_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
@@ -322,7 +341,19 @@ def main(argv: list[str] | None = None) -> int:
     summary = report["summary"]
     print(f"wrote {out_path}", file=sys.stderr)
     print(
-        f"total={summary['total_calls']} outcomes={summary['outcomes']}",
+        "mode={mode} total={total} executed={executed} failed={failed} "
+        "allowed={allowed} denied={denied} false_allows={fa} false_denies={fd} "
+        "completed={completed}".format(
+            mode=report["mode"],
+            total=summary["total_scenarios"],
+            executed=summary["executed_scenarios"],
+            failed=summary["failed_scenarios"],
+            allowed=summary["allowed"],
+            denied=summary["denied"],
+            fa=summary["false_allows"],
+            fd=summary["false_denies"],
+            completed=summary["completed"],
+        ),
         file=sys.stderr,
     )
     return 0

@@ -27,6 +27,7 @@ from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
 from agent44 import observe
+from agent44.model_adapter import ReplayAdapter, ReplayError
 from agent44.observe import JsonlObserver
 from agent44.policy import (
     Action,
@@ -255,6 +256,17 @@ def parse_downstream_args(
         help="YAML policy file; enables ALLOW/DENY enforcement of tool calls.",
     )
     parser.add_argument(
+        "--adapter-replay",
+        metavar="PATH",
+        default=None,
+        help=(
+            "JSON replay fixture for a deterministic model adapter. When set, "
+            "adapter-tier tool calls are decided by replaying recorded "
+            "decisions instead of the rules-only adapter. Missing/invalid "
+            "entries fail closed."
+        ),
+    )
+    parser.add_argument(
         "command",
         nargs=argparse.REMAINDER,
         help="Downstream server command and arguments (after '--').",
@@ -272,7 +284,16 @@ def parse_downstream_args(
     observer = JsonlObserver(args.observe) if args.observe else None
     # Raises PolicyError when --policy is given but the file is unusable.
     policy = PolicyEngine.from_path(args.policy) if args.policy else None
-    return params, observer, policy, RulesOnlyAdapter()
+    adapter: DecisionAdapter
+    if args.adapter_replay:
+        try:
+            adapter = ReplayAdapter.from_file(args.adapter_replay)
+        except ReplayError as exc:
+            print(f"agent44: adapter replay error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+    else:
+        adapter = RulesOnlyAdapter()
+    return params, observer, policy, adapter
 
 
 async def _run(
