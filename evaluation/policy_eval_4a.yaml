@@ -1,0 +1,182 @@
+# Agent44 evaluation policy for Milestone 4a corpus runs.
+# Mirrors the decision tiers the corpus ground truth assumes:
+# hard-deny list + hard rules > deny list > DENY argument rules >
+# allow list > adapter tier (review_tool) > default deny.
+# Adapter-visible rules (adapter-*) are intentionally soft (hard: false)
+# so the RulesOnlyAdapter can consult them.
+
+version: "1"
+name: eval-policy-4a
+
+default_deny: true
+
+allow_tools:
+  - add
+  - echo
+
+deny_tools:
+  - shell_exec
+  - rm_rf
+
+hard_deny_tools:
+  - shell_exec
+  - danger_tool
+
+adapter_tools:
+  - review_tool
+
+rules:
+  # Hard rules: never visible to adapters, never overridden.
+  - id: hard-eval-flag
+    tool: echo
+    action: DENY
+    hard: true
+    reason: "hard-deny: argument 'eval' is never permitted"
+    when:
+      field: eval
+      field_exists: true
+
+  - id: hard-nested-token
+    tool: echo
+    action: DENY
+    hard: true
+    reason: "hard-deny: nested credential field is never permitted"
+    when:
+      field: auth.token
+      field_exists: true
+
+  - id: hard-nested-eval
+    tool: echo
+    action: DENY
+    hard: true
+    reason: "hard-deny: nested eval flag is never permitted"
+    when:
+      field: options.eval
+      field_exists: true
+
+  - id: hard-review-eval
+    tool: review_tool
+    action: DENY
+    hard: true
+    reason: "hard-deny: argument 'eval' is never permitted"
+    when:
+      field: eval
+      field_exists: true
+
+  - id: hard-review-token
+    tool: review_tool
+    action: DENY
+    hard: true
+    reason: "hard-deny: nested credential field is never permitted"
+    when:
+      field: auth.token
+      field_exists: true
+
+  # Ordinary deterministic DENY argument rules.
+  - id: deny-eval-flag
+    tool: echo
+    action: DENY
+    reason: "argument 'eval' is not permitted on echo"
+    when:
+      field: eval
+      field_exists: true
+
+  - id: deny-nested-token
+    tool: echo
+    action: DENY
+    reason: "nested credential field is not permitted"
+    when:
+      field: auth.token
+      field_exists: true
+
+  - id: deny-message-literal
+    tool: echo
+    action: DENY
+    reason: "message matches a blocked literal value"
+    when:
+      field: message
+      equals: "DROP TABLE users"
+
+  - id: deny-count-one
+    tool: echo
+    action: DENY
+    reason: "argument 'count' value 1 is not permitted"
+    when:
+      field: count
+      equals: 1
+
+  - id: deny-secret-api-key
+    tool: echo
+    action: DENY
+    reason: "sensitive argument 'api_key' is not permitted"
+    when:
+      field: api_key
+      field_exists: true
+
+  - id: deny-add-smuggle
+    tool: add
+    action: DENY
+    reason: "argument 'a' must be an integer"
+    when:
+      field: a
+      equals: "2; DROP TABLE users"
+
+  - id: deny-nested-eval
+    tool: echo
+    action: DENY
+    reason: "nested argument 'options.eval' is not permitted"
+    when:
+      field: options.eval
+      field_exists: true
+
+  # Adapter-visible rules (soft by construction).
+  - id: adapter-grant-ok
+    tool: review_tool
+    action: ALLOW
+    reason: "review flag accepted by adapter-visible rule"
+    when:
+      field: ok
+      equals: true
+
+  - id: adapter-deny-blocked
+    tool: review_tool
+    action: DENY
+    reason: "blocked flag set on review_tool"
+    when:
+      field: blocked
+      equals: true
+
+  # Fault-injection markers: reserved arguments that force deterministic DENY
+  # under the healthy adapter, so malformed/failure scenarios keep DENY
+  # ground truth even before a faulting test adapter is injected.
+  - id: deny-inject-malformed
+    tool: review_tool
+    action: DENY
+    reason: "fault-injection marker is not a valid review request"
+    when:
+      field: inject
+      equals: "malformed"
+
+  - id: deny-inject-error
+    tool: review_tool
+    action: DENY
+    reason: "fault-injection marker is not a valid review request"
+    when:
+      field: inject
+      equals: "error"
+
+  - id: deny-inject-timeout
+    tool: review_tool
+    action: DENY
+    reason: "fault-injection marker is not a valid review request"
+    when:
+      field: inject
+      equals: "timeout"
+
+  - id: deny-inject-missing
+    tool: review_tool
+    action: DENY
+    reason: "fault-injection marker is not a valid review request"
+    when:
+      field: inject
+      equals: "missing"
