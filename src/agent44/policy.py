@@ -423,7 +423,7 @@ class PolicyEngine:
                 )
         return None
 
-    def _default_decision(self, tool_name: str, adapter: DecisionAdapter | None) -> Decision:
+    def _default_decision(self, tool_name: str) -> Decision:
         """Return the configured-default outcome for one tool call."""
         policy = self.policy
         base: dict[str, Any] = {
@@ -538,8 +538,14 @@ class PolicyEngine:
             return self._adapter_failure(
                 tool_name, "was undecided", "adapter_undecided", policy
             )
+        elif tool_name in set(policy.adapter_tools):
+            # Adapter-tier tool with no adapter configured: unresolved, so deny
+            # rather than silently falling back to the policy default.
+            return self._adapter_failure(
+                tool_name, "has no configured adapter", "adapter_missing", policy
+            )
 
-        return self._default_decision(tool_name, adapter)
+        return self._default_decision(tool_name)
 
     def evaluate(self, tool_name: str, arguments: dict[str, Any] | None) -> Decision:
         """Return the ALLOW/DENY decision for one tool call.
@@ -551,5 +557,5 @@ class PolicyEngine:
         matched = self.match_rules(tool_name, arguments)
         if matched is not None:
             return matched
-        return self._default_decision(tool_name, None)
+        return self._default_decision(tool_name)
 

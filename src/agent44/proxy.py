@@ -28,7 +28,14 @@ from mcp.server.stdio import stdio_server
 
 from agent44 import observe
 from agent44.observe import JsonlObserver
-from agent44.policy import Action, Decision, PolicyEngine, PolicyError
+from agent44.policy import (
+    Action,
+    Decision,
+    DecisionAdapter,
+    PolicyEngine,
+    PolicyError,
+    RulesOnlyAdapter,
+)
 
 logger = logging.getLogger("agent44.proxy")
 
@@ -46,12 +53,14 @@ class ProxyState:
     params: StdioServerParameters
     observer: JsonlObserver | None = None
     policy: PolicyEngine | None = None
+    adapter: DecisionAdapter | None = None
 
 
 def build_server(
     params: StdioServerParameters,
     observer: JsonlObserver | None = None,
     policy: PolicyEngine | None = None,
+    adapter: DecisionAdapter | None = None,
 ) -> Server:
     """Create a low-level MCP server that proxies the given downstream server.
 
@@ -83,7 +92,11 @@ def build_server(
                         ) from exc
                     logger.info("downstream server initialized")
                     yield ProxyState(
-                        session=session, params=params, observer=observer, policy=policy
+                        session=session,
+                        params=params,
+                        observer=observer,
+                        policy=policy,
+                        adapter=adapter,
                     )
         except (OSError, RuntimeError) as exc:
             # Startup / initialization failure: surface a clear, diagnosable
@@ -127,7 +140,7 @@ def build_server(
         decision: Decision | None = None
         if state.policy is not None:
             try:
-                decision = state.policy.evaluate(name, arguments)
+                decision = await state.policy.decide(name, arguments, state.adapter)
             except Exception:  # noqa: BLE001 - enforcement must fail closed
                 logger.exception("policy evaluation failed; denying call")
                 decision = Decision(
@@ -206,7 +219,9 @@ def build_server(
 
 def parse_downstream_args(
     argv: list[str],
-) -> tuple[StdioServerParameters, JsonlObserver | None, PolicyEngine | None]:
+) -> tuple[
+    StdioServerParameters, JsonlObserver | None, PolicyEngine | None, DecisionAdapter
+]:
     """Split CLI arguments into the downstream command, observer, and policy.
 
     Accepts: [--observe PATH] [--policy PATH] -- <command> [args...]
@@ -216,6 +231,9 @@ def parse_downstream_args(
     * ``--policy PATH`` enables enforcement. A missing or invalid policy file
       raises :class:`PolicyError` so that startup fails loudly instead of
       silently disabling enforcement.
+
+    A default :class:`RulesOnlyAdapter` is always returned so adapter-tier
+    tools are evaluated deterministically when configured.
     """
     parser = argparse.ArgumentParser(
         prog="agent44",
@@ -254,15 +272,16 @@ def parse_downstream_args(
     observer = JsonlObserver(args.observe) if args.observe else None
     # Raises PolicyError when --policy is given but the file is unusable.
     policy = PolicyEngine.from_path(args.policy) if args.policy else None
-    return params, observer, policy
+    return params, observer, policy, RulesOnlyAdapter()
 
 
 async def _run(
     params: StdioServerParameters,
     observer: JsonlObserver | None,
     policy: PolicyEngine | None,
+    adapter: DecisionAdapter,
 ) -> None:
-    server = build_server(params, observer=observer, policy=policy)
+    server = build_server(params, observer=observer, policy=policy, adapter=adapter)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
@@ -279,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     argv = sys.argv[1:] if argv is None else argv
     try:
-        params, observer, policy = parse_downstream_args(argv)
+        params, observer, policy, adapter = parse_downstream_args(argv)
     except SystemExit as exc:  # argparse already printed the message to stderr
         return int(exc.code or 2)
     except PolicyError as exc:
@@ -289,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        anyio.run(_run, params, observer, policy)
+        anyio.run(_run, params, observer, policy, adapter)
     except Exception as exc:  # pragma: no cover - defensive top-level guard
         logger.error("proxy terminated with error: %s", exc)
         return 1
