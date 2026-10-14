@@ -16,9 +16,19 @@ from __future__ import annotations
 import dataclasses
 from collections import Counter, defaultdict
 
+import pytest
+
 from agent44 import corpus
 from agent44.corpus import CorpusCase
-from agent44.eval_runner import failure_analysis, summarize, wilson_interval
+from agent44.eval_runner import (
+    bootstrap_ci,
+    failure_analysis,
+    scenario_level_metrics,
+    stochastic_aggregation,
+    summarize,
+    wilson_interval,
+    within_scenario_variability,
+)
 
 ADVERSARIAL_CATEGORIES = {
     "prompt-injection",
@@ -373,3 +383,144 @@ def test_failure_analysis_detects_cross_trial_inconsistency() -> None:
     ]
     fa = failure_analysis(results)
     assert any(item["id"] == "s1" for item in fa["inconsistent_across_trials"])
+
+
+# --- scenario-level statistics (Protocol v1.1 amendment) --------------------
+
+def test_wilson_62_scenario_zero_miss_upper_bound() -> None:
+    """The worked 62-scenario zero-miss example: upper bound ~= 0.058.
+
+    With 0 false allows across 62 expected-DENY scenarios, the 95% Wilson
+    upper bound is approximately 0.058 (the 'rule of three' bound 3/62 is
+    0.0485; Wilson is slightly conservative). The point estimate is exactly
+    0.0 and the lower bound is exactly 0.0.
+    """
+    interval = wilson_interval(0, 62)
+    assert interval["point"] == 0.0
+    assert interval["lower"] == 0.0
+    assert interval["successes"] == 0
+    assert interval["n"] == 62
+    assert 0.05 <= interval["upper"] <= 0.07
+
+
+def test_scenario_level_metrics_zero_miss_across_62_deny_scenarios() -> None:
+    results = [
+        _rec(f"deny-{i}", expected="DENY", action="DENY", trial=0)
+        for i in range(62)
+    ]
+    metrics = scenario_level_metrics(results)
+    assert metrics["distinct_scenarios"] == 62
+    assert metrics["false_allow_denominator"] == 62
+    assert metrics["false_allow_numerator"] == 0
+    assert metrics["false_allow_interval"]["upper"] <= 0.07
+    # No expected-ALLOW scenarios -> false-deny denominator is a real zero.
+    assert metrics["false_deny_denominator"] == 0
+    assert metrics["false_deny_interval"]["point"] is None
+
+
+def test_scenario_level_metrics_collapses_trials_to_one_outcome() -> None:
+    """Repeated agreeing trials of a scenario are one independent unit."""
+    results = []
+    for trial in range(5):
+        results.append(_rec("d", expected="DENY", action="DENY", trial=trial))
+        results.append(_rec("a", expected="ALLOW", action="ALLOW", trial=trial))
+    metrics = scenario_level_metrics(results)
+    assert metrics["distinct_scenarios"] == 2
+    assert metrics["resolved_scenarios"] == 2
+    assert metrics["false_allow_denominator"] == 1
+    assert metrics["false_deny_denominator"] == 1
+    assert metrics["false_allow_numerator"] == 0
+    assert metrics["false_deny_numerator"] == 0
+
+
+def test_scenario_level_metrics_excludes_inconsistent_and_unresolved() -> None:
+    results = [
+        _rec("flip", expected="DENY", action="ALLOW", trial=0),
+        _rec("flip", expected="DENY", action="DENY", trial=1),  # disagrees
+        _rec("dead", expected="DENY", action=None, error="harness_timeout", trial=0),
+        _rec("fa", expected="DENY", action="ALLOW", trial=0),  # clean false allow
+        _rec("ok", expected="DENY", action="DENY", trial=0),
+    ]
+    metrics = scenario_level_metrics(results)
+    # flip is inconsistent (excluded), dead is unresolved (excluded).
+    assert metrics["inconsistent_scenarios"] == 1
+    assert metrics["unresolved_scenarios"] == 1
+    assert metrics["resolved_scenarios"] == 2
+    # Denominator counts only resolved expected-DENY scenarios: fa + ok.
+    assert metrics["false_allow_denominator"] == 2
+    assert metrics["false_allow_numerator"] == 1
+    assert metrics["false_allow_interval"]["point"] == 0.5
+
+
+# --- stochastic-adapter aggregation (Section A: per-scenario first) --------
+
+
+def test_bootstrap_ci_point_and_reproducible() -> None:
+    """Percentile bootstrap reports the mean and is reproducible for a seed."""
+    per_scenario = [0.0, 1.0, 0.0, 0.0, 1.0]
+    ci = bootstrap_ci(per_scenario, iterations=4000, seed=7)
+    assert ci["n"] == 5
+    assert ci["iterations"] == 4000
+    assert ci["seed"] == 7
+    assert ci["point"] == pytest.approx(0.4)
+    # Bounds are valid proportions and bracket the point estimate.
+    assert 0.0 <= ci["lower"] <= ci["point"] <= ci["upper"] <= 1.0
+    # Same seed -> identical interval.
+    assert bootstrap_ci(per_scenario, iterations=4000, seed=7) == ci
+
+
+def test_bootstrap_ci_zero_and_empty() -> None:
+    """Zero/empty per-scenario input is handled without dividing by zero."""
+    empty = bootstrap_ci([], iterations=1000, seed=0)
+    assert empty["point"] is None
+    assert empty["n"] == 0
+    all_zero = bootstrap_ci([0.0, 0.0, 0.0], iterations=1000, seed=0)
+    assert all_zero["point"] == 0.0
+    assert all_zero["lower"] == all_zero["upper"] == 0.0
+
+
+def test_stochastic_aggregation_rates_per_scenario_first() -> None:
+    """Rates are computed per scenario then averaged; trials are not samples.
+
+    Expected-DENY scenarios d (0/3 false allow), fa (3/3), flip (1/3) give a
+    per-scenario mean of (0 + 1 + 1/3)/3 = 0.444 over 3 independent scenarios,
+    with the interval bootstraped over scenarios (unit == "scenario").
+    """
+    results = []
+    for trial in range(3):
+        results += [
+            _rec("a", expected="ALLOW", action="ALLOW", trial=trial),
+            _rec("d", expected="DENY", action="DENY", trial=trial),
+            _rec("fa", expected="DENY", action="ALLOW", trial=trial),
+            _rec("flip", expected="DENY",
+                 action="ALLOW" if trial == 0 else "DENY", trial=trial),
+        ]
+    agg = stochastic_aggregation(results, iterations=2000, seed=1)
+    assert agg["unit"] == "scenario"
+    assert agg["false_allow"]["scenarios"] == 3
+    assert agg["false_allow"]["n"] == 3
+    assert agg["false_allow"]["point"] == pytest.approx(4.0 / 9.0)
+    assert agg["false_deny"]["n"] == 1  # only expected-ALLOW scenario 'a'
+    assert agg["false_deny"]["point"] == 0.0
+    # 3 trials x 4 scenarios = 12 executed trials; none excluded.
+    assert agg["excluded_no_executed_trial"] == 0
+    # Reproducible for the same seed.
+    again = stochastic_aggregation(results, iterations=2000, seed=1)
+    assert again["false_allow"] == agg["false_allow"]
+
+
+def test_within_scenario_variability_flags_only_flipping_scenario() -> None:
+    """Trial variability is reported separately; stable scenarios do not flag."""
+    results = []
+    for trial in range(3):
+        results += [
+            _rec("stable", expected="DENY", action="DENY", trial=trial),
+            _rec("flip", expected="DENY",
+                 action="ALLOW" if trial == 0 else "DENY", trial=trial),
+        ]
+    var = within_scenario_variability(results)
+    assert var["scenarios_with_trials"] == 2
+    assert var["scenarios_with_varying_decision"] == 1
+    assert var["varying_scenario_ids"] == ["flip"]
+
+

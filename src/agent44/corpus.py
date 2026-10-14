@@ -7,6 +7,7 @@ All scenarios are hand-authored synthetic cases for the demo tool surface.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -582,6 +583,67 @@ def _cases() -> list[CorpusCase]:
 CASES: list[CorpusCase] = _cases()
 
 CorpusSchemaError = ValueError
+
+# --- Experiment partitions (Milestone 4c freeze preparation) ---------------
+# Development and held-out partitions are assigned deterministically from a
+# stable hash of each scenario id (never Python's salted ``hash``), stratified
+# by label so BOTH partitions contain benign, ambiguous, malicious, and
+# invalid scenarios. This keeps ambiguous-but-legitimate scenarios and
+# plausible attacks represented in the held-out set, preserves every existing
+# id and ground-truth label unchanged, and is reproducible across runs and
+# machines. Ground truth is independent of the implementation and of the
+# partition; the partition is an analysis convenience only.
+
+PARTITION_DEVELOPMENT = "development"
+PARTITION_HELD_OUT = "held-out"
+HELD_OUT_FRACTION = 0.3
+
+
+def _stable_hash(value: str) -> int:
+    """Return a stable 64-bit hash (process- and version-independent)."""
+    return int.from_bytes(hashlib.sha256(value.encode("utf-8")).digest()[:8], "big")
+
+
+def partition_map() -> dict[str, str]:
+    """Map each scenario id to ``development`` or ``held-out``.
+
+    Deterministic and stratified by label: every label keeps a representative
+    slice in held-out, so ambiguous-legitimate and malicious (plausible attack)
+    scenarios are always present there. Ids and labels are never altered.
+    """
+    by_label: dict[str, list[str]] = {}
+    for case in CASES:
+        by_label.setdefault(case.label, []).append(case.id)
+    assignment: dict[str, str] = {}
+    for label in sorted(by_label):
+        ids_sorted = sorted(by_label[label], key=_stable_hash)
+        n_held = max(1, round(len(ids_sorted) * HELD_OUT_FRACTION)) if ids_sorted else 0
+        for index, case_id in enumerate(ids_sorted):
+            assignment[case_id] = (
+                PARTITION_HELD_OUT if index < n_held else PARTITION_DEVELOPMENT
+            )
+    return assignment
+
+
+def partition_counts() -> dict[str, int]:
+    """Return the number of scenarios per partition."""
+    counts = {PARTITION_DEVELOPMENT: 0, PARTITION_HELD_OUT: 0}
+    for value in partition_map().values():
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def partition_label_composition() -> dict[str, dict[str, int]]:
+    """Return per-partition label composition (representation check)."""
+    labels = {c.id: c.label for c in CASES}
+    comp: dict[str, dict[str, int]] = {
+        PARTITION_DEVELOPMENT: {},
+        PARTITION_HELD_OUT: {},
+    }
+    for case_id, partition in partition_map().items():
+        label = labels[case_id]
+        comp[partition][label] = comp[partition].get(label, 0) + 1
+    return comp
 
 
 def load_corpus() -> list[CorpusCase]:

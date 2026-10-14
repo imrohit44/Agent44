@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
+import random
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -182,6 +185,220 @@ def wilson_interval(
     }
 
 
+def group_by_scenario(
+    results: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Group trial-level records by scenario id, preserving encounter order.
+
+    The scenario is the independent statistical unit (protocol amendment
+    v1.1 §Statistical units). Repeated trials of one scenario are never
+    independent samples and must not inflate a denominator.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for record in results:
+        grouped.setdefault(_scenario_id(record), []).append(record)
+    return grouped
+
+
+def scenario_level_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compute scenario-level false-allow/false-deny rates (primary unit).
+
+    For a deterministic decision, every scenario contributes exactly one
+    outcome. A scenario is a false allow iff it is expected DENY and every
+    executed trial was ALLOWed; a false deny iff expected ALLOW and every
+    executed trial was DENY. Scenarios whose trials disagree, or that have no
+    executed trial, are excluded from the numerator and the denominator and
+    reported separately, so failed/skipped/ambiguous trials can never silently
+    improve a rate. Returns Wilson intervals with explicit per-interval
+    numerators and denominators and null-on-zero-denominator behavior.
+    """
+    grouped = group_by_scenario(results)
+    total = len(grouped)
+    expected_deny = expected_allow = resolved = unresolved = 0
+    false_allows = false_denies = 0
+    inconsistent: list[str] = []
+
+    for sid in sorted(grouped):
+        rows = grouped[sid]
+        executed = [r for r in rows if r["error"] is None]
+        if not executed:
+            unresolved += 1
+            continue
+        actions = {str(r["policy_action"]) for r in executed}
+        expected = str(rows[0]["expected"])
+        if len(actions) > 1:
+            # Stochastic disagreement: not a single deterministic outcome.
+            inconsistent.append(sid)
+            continue
+        resolved += 1
+        observed = next(iter(actions))
+        if expected == "DENY":
+            expected_deny += 1
+            if observed == "ALLOW":
+                false_allows += 1
+        elif expected == "ALLOW":
+            expected_allow += 1
+            if observed == "DENY":
+                false_denies += 1
+
+    return {
+        "unit": "scenario",
+        "distinct_scenarios": total,
+        "resolved_scenarios": resolved,
+        "unresolved_scenarios": unresolved,
+        "inconsistent_scenarios": len(inconsistent),
+        "inconsistent_scenario_ids": inconsistent,
+        "false_allow_numerator": false_allows,
+        "false_allow_denominator": expected_deny,
+        "false_deny_numerator": false_denies,
+        "false_deny_denominator": expected_allow,
+        "false_allow_interval": wilson_interval(false_allows, expected_deny),
+        "false_deny_interval": wilson_interval(false_denies, expected_allow),
+        "sample_size_note": (
+            "Primary statistical unit is the distinct scenario. Repeated "
+            "trials of one scenario are collapsed to a single outcome; a "
+            "scenario is counted only when all its executed trials agree and "
+            "at least one executed. Unresolved/inconsistent scenarios are "
+            "excluded from numerators and denominators, never counted as "
+            "successes."
+        ),
+    }
+
+
+def bootstrap_ci(
+    per_scenario: list[float],
+    *,
+    iterations: int = 10_000,
+    alpha: float = 0.05,
+    seed: int = 0,
+) -> dict[str, float | int | None]:
+    """Percentile bootstrap CI over per-scenario proportions (amendment v1.1).
+
+    ``per_scenario`` holds one proportion in ``[0, 1]`` per scenario (e.g. a
+    per-scenario false-allow rate across that scenario's trials). Resampling
+    is over scenarios, the independent unit, so repeated trials never inflate
+    the sample size. Uses an explicit ``seed`` for reproducibility. Returns
+    ``{\"point\", \"lower\", \"upper\", \"n\", \"iterations\", \"seed\"}`` with
+    ``None`` point/limits when ``n == 0``.
+    """
+    n = len(per_scenario)
+    if n == 0:
+        return {
+            "point": None,
+            "lower": None,
+            "upper": None,
+            "n": 0,
+            "iterations": iterations,
+            "seed": seed,
+        }
+    rng = random.Random(seed)
+    total = sum(per_scenario)
+    means: list[float] = []
+    for _ in range(iterations):
+        acc = 0.0
+        for _ in range(n):
+            acc += per_scenario[rng.randrange(n)]
+        means.append(acc / n)
+    means.sort()
+    lo_idx = int((alpha / 2) * iterations)
+    hi_idx = min(iterations - 1, int((1 - alpha / 2) * iterations))
+    return {
+        "point": total / n,
+        "lower": means[lo_idx],
+        "upper": means[hi_idx],
+        "n": n,
+        "iterations": iterations,
+        "seed": seed,
+    }
+
+
+def within_scenario_variability(
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Summarize how often a scenario's decision varies across its trials.
+
+    Reported separately from scenario-level rates so deterministic invariance
+    (0 variability) is distinguishable from a stochastic adapter that flips
+    decisions between trials of the same scenario.
+    """
+    grouped = group_by_scenario(results)
+    varying = 0
+    varying_ids: list[str] = []
+    for sid in sorted(grouped):
+        actions = {
+            str(r["policy_action"]) for r in grouped[sid] if r["error"] is None
+        }
+        if len(actions) > 1:
+            varying += 1
+            varying_ids.append(sid)
+    return {
+        "scenarios_with_trials": len(grouped),
+        "scenarios_with_varying_decision": varying,
+        "varying_scenario_ids": varying_ids,
+    }
+
+
+def stochastic_aggregation(
+    results: list[dict[str, Any]],
+    *,
+    iterations: int = 10_000,
+    seed: int = 0,
+) -> dict[str, Any]:
+    """Aggregate a stochastic adapter at the scenario level (amendment v1.1).
+
+    For each expected-DENY scenario we form the per-scenario false-allow
+    proportion = (ALLOWed trials) / (executed trials); likewise false deny for
+    expected-ALLOW scenarios. Averaging those per-scenario proportions gives a
+    scenario-weighted point estimate, and :func:`bootstrap_ci` resamples over
+    scenarios (the independent unit) for an interval. This never treats repeated
+    trials of one scenario as independent. Scenarios with no executed trial are
+    excluded from both numerator and denominator. Deterministic runs (one
+    agreeing outcome per scenario) reduce cleanly to the scenario-level rates.
+    """
+    grouped = group_by_scenario(results)
+    fa_rates: list[float] = []
+    fd_rates: list[float] = []
+    fa_scenarios = fd_scenarios = 0
+    excluded = 0
+    for sid in sorted(grouped):
+        rows = grouped[sid]
+        executed = [r for r in rows if r["error"] is None]
+        if not executed:
+            excluded += 1
+            continue
+        expected = str(rows[0]["expected"])
+        allow_trials = sum(1 for r in executed if r["policy_action"] == "ALLOW")
+        proportion = allow_trials / len(executed)
+        if expected == "DENY":
+            fa_scenarios += 1
+            fa_rates.append(proportion)
+        elif expected == "ALLOW":
+            fd_scenarios += 1
+            fd_rates.append(1.0 - proportion)
+
+    return {
+        "unit": "scenario",
+        "method": (
+            "Per-scenario proportion averaged over scenarios; percentile "
+            "bootstrap over scenarios (independent unit) for the interval."
+        ),
+        "false_allow": {
+            **bootstrap_ci(fa_rates, iterations=iterations, seed=seed),
+            "scenarios": fa_scenarios,
+        },
+        "false_deny": {
+            **bootstrap_ci(fd_rates, iterations=iterations, seed=seed),
+            "scenarios": fd_scenarios,
+        },
+        "excluded_no_executed_trial": excluded,
+        "note": (
+            "Within-scenario trial variability is reported separately in "
+            "summary.scenario_level.variability; it is not treated as extra "
+            "independent samples here."
+        ),
+    }
+
+
 def _percentiles(values: list[float]) -> dict[str, float | int | None]:
     """Return min/p50/p95/max percentiles (protocol §10), or ``None`` if empty.
 
@@ -211,7 +428,9 @@ def _percentiles(values: list[float]) -> dict[str, float | int | None]:
     }
 
 
-def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize(
+    results: list[dict[str, Any]], *, bootstrap_seed: int = 0
+) -> dict[str, Any]:
     """Aggregate per-case records into protocol section 7 metrics."""
     total = len(results)
     executed = sum(1 for r in results if r["error"] is None)
@@ -368,6 +587,19 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
             "gateway overhead. Offline rules-only/replay timing is NOT model "
             "inference latency."
         ),
+        "scenario_level": {
+            "note": (
+                "Primary statistical unit is the DISTINCT scenario. These "
+                "rates collapse repeated trials to one outcome per scenario "
+                "and use scenario counts as denominators. Use these for "
+                "deterministic rules-only conclusions."
+            ),
+            **scenario_level_metrics(results),
+            "variability": within_scenario_variability(results),
+        },
+        "stochastic_aggregation": stochastic_aggregation(
+            results, seed=bootstrap_seed
+        ),
         "completed": failed == 0,
     }
 
@@ -482,6 +714,7 @@ async def evaluate(
     adapter_replay: str | Path | None = None,
     timeout_seconds: float = 30.0,
     trials: int = 1,
+    bootstrap_seed: int = 0,
 ) -> dict[str, Any]:
     """Run the corpus through the enforcing proxy and return the report.
 
@@ -553,6 +786,7 @@ async def evaluate(
         "adapter_replay": str(adapter_replay) if adapter_replay else None,
         "trials": trials,
         "scenarios": len(cases),
+        "bootstrap_seed": bootstrap_seed,
         "stochastic": False,
         "determinism_note": (
             "Rules-only and replay modes are deterministic; every trial of a "
@@ -569,13 +803,109 @@ async def evaluate(
             "prevention."
         ),
         "results": results,
-        "summary": summarize(results),
+        "summary": summarize(results, bootstrap_seed=bootstrap_seed),
         "failure_analysis": failure_analysis(results),
+    }
+
+
+def _sha256_file(path: Path) -> str | None:
+    """Return the SHA-256 of a file, or ``None`` if it does not exist."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _git_commit() -> str | None:
+    """Return the current git commit id, or ``None`` outside a git checkout."""
+    try:
+        out = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        return out.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def build_manifest(policy_path: str | Path | None = None) -> dict[str, Any]:
+    """Build a reproducible experiment manifest for a freeze.
+
+    Records the git commit id and SHA-256 hashes of the corpus module, the
+    evaluation policy, the frozen protocol, the amendment, the replay
+    fixture, and the runner itself, plus the dev/held-out partition counts.
+    Contains no credentials or sensitive values: it hashes files, it never
+    reads or embeds secrets. Hash inputs are source and config only.
+    """
+    evaluation_dir = Path(__file__).resolve().parent.parent.parent / "evaluation"
+    policy = Path(policy_path) if policy_path is not None else EVAL_POLICY
+    protocol = evaluation_dir / "PROTOCOL_v1.md"
+    amendment = evaluation_dir / "PROTOCOL_v1.1_AMENDMENT.md"
+    replay = evaluation_dir / "adapter_replay_fixture.json"
+    return {
+        "protocol": "PROTOCOL_v1.1_AMENDMENT",
+        "generated_by": "agent44.eval_runner manifest",
+        "git_commit": _git_commit(),
+        "corpus_version": corpus.CORPUS_VERSION,
+        "artifacts": {
+            "corpus_module": {
+                "path": "src/agent44/corpus.py",
+                "sha256": _sha256_file(Path(__file__).resolve().parent / "corpus.py"),
+            },
+            "eval_runner": {
+                "path": "src/agent44/eval_runner.py",
+                "sha256": _sha256_file(Path(__file__).resolve()),
+            },
+            "policy": {
+                "path": str(policy),
+                "sha256": _sha256_file(policy),
+            },
+            "protocol_v1": {
+                "path": str(protocol),
+                "sha256": _sha256_file(protocol),
+            },
+            "amendment_v11": {
+                "path": str(amendment),
+                "sha256": _sha256_file(amendment),
+            },
+            "replay_fixture": {
+                "path": str(replay),
+                "sha256": _sha256_file(replay),
+            },
+        },
+        "partitions": {
+            "fraction_held_out": corpus.HELD_OUT_FRACTION,
+            "counts": corpus.partition_counts(),
+            "label_composition": corpus.partition_label_composition(),
+            "note": (
+                "Deterministic, label-stratified, reproducible from scenario "
+                "ids alone. Ids and ground-truth labels are unchanged."
+            ),
+        },
+        "independent_cases": None,
+        "limitations": [
+            "All scenarios are hand-authored-synthetic; no independent or "
+            "external cases exist, so independent-review claims are "
+            "unsupported.",
+        ],
     }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agent44-eval")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="run",
+        choices=["run", "manifest"],
+        help=(
+            "'run' (default) executes the corpus; 'manifest' writes a "
+            "reproducible experiment manifest (commit id + artifact hashes)."
+        ),
+    )
     parser.add_argument(
         "-o",
         "--output",
@@ -605,13 +935,40 @@ def main(argv: list[str] | None = None) -> int:
             "are reported separately and never merged."
         ),
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help=(
+            "Seed for the scenario-level percentile bootstrap used for a "
+            "stochastic adapter's intervals (default: 0). Fixed seed makes "
+            "bootstrap output reproducible; rules-only/replay modes are "
+            "deterministic regardless of seed."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.command == "manifest":
+        manifest = build_manifest()
+        out_path = Path(args.output)
+        out_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"wrote {out_path}", file=sys.stderr)
+        print(
+            f"commit={manifest['git_commit']} "
+            f"partitions={manifest['partitions']['counts']}",
+            file=sys.stderr,
+        )
+        return 0
 
     report = asyncio.run(
         evaluate(
             observe_path=args.observe,
             adapter_replay=args.adapter_replay,
             trials=args.trials,
+            bootstrap_seed=args.seed,
         )
     )
     out_path = Path(args.output)
