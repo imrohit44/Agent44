@@ -16,8 +16,11 @@ Safety properties enforced here:
 - **Bounded.** Requests carry an explicit timeout; responses are streamed and
   capped in size; prompts are the already-bounded prompt from the adapter.
 - **Fail closed.** Any provider error (connection refused, timeout, oversized
-  or malformed response, unknown shape, redirect, remote host) raises
-  :class:`LocalProviderError`, which the engine maps to a fail-closed ``DENY``.
+  response, redirect, remote host) raises :class:`LocalProviderError`, which
+  the engine maps to a fail-closed ``DENY`` (``adapter_error``). Malformed
+  response *content* (invalid UTF-8, non-JSON lines, unknown shape) raises
+  :class:`LocalProviderResponseError`, mapped to the distinct fail-closed
+  ``adapter_invalid`` outcome. No failure mode is ever non-blocking.
 - **No secrets out.** Prompts already contain only safe argument metadata
   (types/lengths); nothing here adds arguments, credentials, or results to any
   outbound request.
@@ -37,6 +40,7 @@ from typing import Any
 import httpx
 
 from agent44.model_adapter import ModelDecisionAdapter
+from agent44.policy import AdapterParseError
 
 # Loopback names that are allowed without further resolution checks.
 _LOOPBACK_NAMES = frozenset({"localhost"})
@@ -51,7 +55,21 @@ MAX_RESPONSE_BYTES = 1 << 20  # 1 MiB
 class LocalProviderError(RuntimeError):
     """Raised for any local-provider configuration or transport failure.
 
-    Treated by the engine as a fail-closed adapter error (→ ``DENY``).
+    Treated by the engine as a fail-closed adapter error (→ ``DENY``,
+    rule id ``adapter_error``).
+    """
+
+
+class LocalProviderResponseError(LocalProviderError, AdapterParseError):
+    """Raised when the local model returns malformed response *content*.
+
+    The request itself succeeded (transport, HTTP status, redirect, and size
+    checks passed) but the body is not a well-formed Ollama payload: invalid
+    UTF-8, non-JSON lines, a missing/non-string ``response`` field, or an
+    unexpected shape. Because a response arrived but could not be parsed, the
+    engine maps this to the fail-closed ``adapter_invalid`` outcome (a DENY);
+    transport/status/limit failures remain plain :class:`LocalProviderError`
+    → ``adapter_error``.
     """
 
 
@@ -106,14 +124,17 @@ def _extract_text(body: bytes) -> str:
 
     Ollama ``stream: true`` returns newline-delimited JSON objects, each with a
     ``response`` fragment. A single non-streamed object is also accepted. Any
-    unexpected shape raises :class:`LocalProviderError` (fail closed). The
-    returned text is bounded by :data:`MAX_RESPONSE_BYTES` at read time; the
-    adapter's strict parser then bounds its length and rejects junk.
+    unexpected shape raises :class:`LocalProviderResponseError` (fail closed;
+    the engine reports it as ``adapter_invalid``). The returned text is bounded
+    by :data:`MAX_RESPONSE_BYTES` at read time; the adapter's strict parser
+    then bounds its length and rejects junk.
     """
     try:
         text = body.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise LocalProviderError(f"local model response is not valid UTF-8: {exc}") from exc
+        raise LocalProviderResponseError(
+            f"local model response is not valid UTF-8: {exc}"
+        ) from exc
     fragments: list[str] = []
     for line in text.splitlines():
         line = line.strip()
@@ -122,17 +143,23 @@ def _extract_text(body: bytes) -> str:
         try:
             obj = json.loads(line)
         except ValueError as exc:
-            raise LocalProviderError(f"local model response line is not JSON: {exc}") from exc
+            raise LocalProviderResponseError(
+                f"local model response line is not JSON: {exc}"
+            ) from exc
         if not isinstance(obj, dict):
-            raise LocalProviderError("local model response line is not a JSON object")
+            raise LocalProviderResponseError("local model response line is not a JSON object")
         fragment = obj.get("response")
         if fragment is None:
             # A terminal done marker may omit 'response'; that is acceptable.
             if obj.get("done"):
                 continue
-            raise LocalProviderError("local model response object has no 'response' field")
+            raise LocalProviderResponseError(
+                "local model response object has no 'response' field"
+            )
         if not isinstance(fragment, str):
-            raise LocalProviderError("local model response 'response' field is not a string")
+            raise LocalProviderResponseError(
+                "local model response 'response' field is not a string"
+            )
         fragments.append(fragment)
     return "".join(fragments)
 

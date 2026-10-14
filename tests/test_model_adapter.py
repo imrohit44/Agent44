@@ -9,6 +9,7 @@ secret-safe prompts/keys, and deterministic replay/fake behavior.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 from textwrap import dedent
@@ -23,8 +24,9 @@ from agent44.model_adapter import (
     ReplayError,
     decision_key,
     parse_model_decision,
+    sanitized_response_summary,
 )
-from agent44.policy import Action, PolicyEngine
+from agent44.policy import Action, AdapterParseError, PolicyEngine
 
 POLICY = dedent(
     """
@@ -200,7 +202,10 @@ def test_adapter_invalid_output_fails_closed(tmp_path: Path) -> None:
     adapter = ModelDecisionAdapter(make_complete("this is not json"))
     decision = run(engine.decide("review_tool", {"ok": False}, adapter))
     assert decision.action is Action.DENY
-    assert decision.rule_id == "adapter_error"
+    # Malformed model output is a parse failure: adapter_invalid, kept
+    # distinct from the generic adapter_error provider bucket.
+    assert decision.rule_id == "adapter_invalid"
+    assert "ModelOutputError" in decision.reason
 
 
 def test_adapter_undecided_fails_closed(tmp_path: Path) -> None:
@@ -354,4 +359,80 @@ def test_replay_adapter_bad_json_rejected(tmp_path: Path) -> None:
     fixture.write_text("{ not json")
     with pytest.raises(ReplayError):
         ReplayAdapter.from_file(fixture)
+
+
+# --- parse-vs-provider failure separation, bounded reasons, redaction -------
+
+
+def test_model_output_error_is_adapter_parse_error() -> None:
+    assert issubclass(ModelOutputError, AdapterParseError)
+    assert issubclass(AdapterParseError, ValueError)
+
+
+def test_adapter_parse_error_classified_as_invalid(tmp_path: Path) -> None:
+    class ParseFailingAdapter:
+        async def decide(self, tool_name, arguments, rules):
+            raise AdapterParseError("response was not valid JSON: unexpected token")
+
+    engine = engine_for(tmp_path)
+    decision = run(engine.decide("review_tool", {"ok": False}, ParseFailingAdapter()))
+    assert decision.action is Action.DENY
+    assert decision.rule_id == "adapter_invalid"
+    assert "AdapterParseError" in decision.reason
+    assert "not valid JSON" in decision.reason
+
+
+def test_adapter_generic_exception_reports_class_only(tmp_path: Path) -> None:
+    class ExplodingAdapter:
+        async def decide(self, tool_name, arguments, rules):
+            raise RuntimeError("connection refused to http://secret-host:1234/x?token=abc")
+
+    engine = engine_for(tmp_path)
+    decision = run(engine.decide("review_tool", {"ok": False}, ExplodingAdapter()))
+    assert decision.action is Action.DENY
+    assert decision.rule_id == "adapter_error"
+    assert "RuntimeError" in decision.reason
+    # Untrusted exception messages are never copied into the reason.
+    assert "token" not in decision.reason
+    assert "secret-host" not in decision.reason
+
+
+def test_adapter_parse_error_reason_is_bounded_and_printable(tmp_path: Path) -> None:
+    class ParseFailingAdapter:
+        async def decide(self, tool_name, arguments, rules):
+            raise AdapterParseError("x" * 5000 + "\n" + "y" * 100)
+
+    engine = engine_for(tmp_path)
+    decision = run(engine.decide("review_tool", {"ok": False}, ParseFailingAdapter()))
+    assert decision.action is Action.DENY
+    assert decision.rule_id == "adapter_invalid"
+    assert len(decision.reason) < 300
+    assert "\n" not in decision.reason
+
+
+def test_parser_error_messages_are_bounded() -> None:
+    with pytest.raises(ModelOutputError) as invalid:
+        parse_model_decision('{"action": ' + json.dumps("A" * 5000) + "}")
+    assert len(str(invalid.value)) < 300
+    with pytest.raises(ModelOutputError) as extra:
+        parse_model_decision(json.dumps({"action": "ALLOW", "reason": "ok", ("k" * 3000): 1}))
+    assert len(str(extra.value)) < 300
+
+
+def test_sanitized_response_summary_never_embeds_raw_response() -> None:
+    raw = "this is not json\n\x00\x01 with control chars"
+    summary = sanitized_response_summary(raw)
+    assert summary["chars"] == len(raw)
+    assert summary["sha256"] == hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    assert summary["excerpt"] != raw
+    assert len(summary["excerpt"]) <= 160
+    assert "\x00" not in summary["excerpt"]
+
+
+def test_sanitized_response_summary_digest_changes_with_response() -> None:
+    allow = sanitized_response_summary('{"action": "ALLOW"}')
+    deny = sanitized_response_summary('{"action": "DENY"}')
+    assert allow["sha256"] != deny["sha256"]
+    with pytest.raises(ModelOutputError):
+        sanitized_response_summary(b"not a string")  # type: ignore[arg-type]
 

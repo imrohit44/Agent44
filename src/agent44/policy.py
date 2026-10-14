@@ -264,6 +264,23 @@ ADAPTER_TIMEOUT_SECONDS = 5.0
 """Maximum time the engine waits for one adapter call before failing closed."""
 
 
+class AdapterParseError(ValueError):
+    """Raised when an adapter received a response but could not parse it.
+
+    Adapters raise this when a response arrived but could not be converted
+    into a valid decision — malformed JSON, an unexpected wire shape, or
+    out-of-policy fields. The engine maps it to the fail-closed
+    ``adapter_invalid`` outcome (a DENY), keeping parser failures distinct
+    from provider/transport failures (``adapter_error``, class ``Exception``)
+    and timeouts (``adapter_timeout``, class ``TimeoutError``).
+
+    Contract: message text must never embed raw argument values or other
+    secrets. The engine includes a defensively sanitized, bounded excerpt of
+    the message in the decision reason to aid pilot diagnosis; raise sites
+    must keep messages bounded and secret-free themselves.
+    """
+
+
 class AdapterDecision(BaseModel):
     """A decision returned by a :class:`DecisionAdapter`.
 
@@ -468,10 +485,27 @@ class PolicyEngine:
         return [rule for rule in self.policy.rules if not rule.hard]
 
     @staticmethod
+    def _bounded_detail(exc: BaseException) -> str:
+        """Return a bounded, printable excerpt of an adapter parse failure.
+
+        Defensive bound: even a third-party adapter raising an oversized or
+        control-character-laden message can never flood the decision reason
+        (which flows into the JSONL observation log). Contract for
+        :class:`AdapterParseError` raisers: never embed raw argument values.
+        """
+        text = "".join(ch if ch.isprintable() else " " for ch in str(exc))
+        text = " ".join(text.split())
+        if len(text) > 160:
+            text = text[:157].rstrip() + "..."
+        if not text:
+            return type(exc).__name__
+        return f"{type(exc).__name__}: {text}"
+
+    @staticmethod
     def _adapter_failure(
         tool_name: str, reason: str, rule_id: str, policy: Policy
     ) -> Decision:
-        """Build a fail-closed DENY with static, value-free reason text."""
+        """Build a fail-closed DENY with bounded, value-free reason text."""
         return Decision(
             action=Action.DENY,
             reason=f"adapter decision for tool '{tool_name}' {reason}; call denied",
@@ -494,7 +528,11 @@ class PolicyEngine:
         tier matches, the tool is explicitly listed in ``adapter_tools``, and
         an adapter is configured is the adapter consulted (bounded by
         ``ADAPTER_TIMEOUT_SECONDS``). Adapter failures, invalid outputs, and
-        ``UNDECIDED`` all fail closed to ``DENY``. Unresolved calls fall
+        ``UNDECIDED`` all fail closed to ``DENY``; the ``rule_id`` keeps the
+        buckets distinguishable: ``adapter_timeout`` (engine deadline),
+        ``adapter_invalid`` (a response arrived but could not be parsed),
+        ``adapter_error`` (provider/transport/configuration failure),
+        ``adapter_undecided``, and ``adapter_missing``. Unresolved calls fall
         through to the configured policy default. Never returns ``UNDECIDED``.
         """
         policy = self.policy
@@ -513,8 +551,26 @@ class PolicyEngine:
                 return self._adapter_failure(tool_name, "timed out", "adapter_timeout", policy)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                return self._adapter_failure(tool_name, "raised an error", "adapter_error", policy)
+            except AdapterParseError as exc:
+                # A response arrived but could not be parsed into a decision
+                # (malformed model output or wire payload): report it as
+                # adapter_invalid with a sanitized, bounded excerpt so parser
+                # failures are diagnosable without logging raw responses.
+                return self._adapter_failure(
+                    tool_name,
+                    f"received a response that could not be parsed ({self._bounded_detail(exc)})",
+                    "adapter_invalid",
+                    policy,
+                )
+            except Exception as exc:
+                # Generic adapter/provider failures: class name only. Exception
+                # messages are untrusted and may embed arbitrary data.
+                return self._adapter_failure(
+                    tool_name,
+                    f"raised an error ({type(exc).__name__})",
+                    "adapter_error",
+                    policy,
+                )
             if not isinstance(raw, AdapterDecision):
                 return self._adapter_failure(
                     tool_name, "returned an invalid decision", "adapter_invalid", policy

@@ -12,6 +12,13 @@ downstream. It is NEVER reported as end-to-end attack prevention.
 Deterministic: scenarios run sequentially in corpus order; no model calls,
 no network access, no randomness. The machine-readable JSON report is the
 stable contract; latency fields are informational only.
+
+Pilot safeguards: scenario selection honors the pre-registered development/
+held-out partition split (local-model runs are refused unless they select
+the development partition explicitly); the report records the decision
+source (rules-only, fixture-replay, or live local model), run bounds, and
+the local-model call budget so a strictly-local pilot stays bounded and
+reproducible.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from agent44 import corpus
+from agent44 import policy as policy_module
 from agent44.corpus import CorpusCase
 from agent44.observe import JsonlObserver
 
@@ -57,6 +65,16 @@ ADAPTER_RULE_IDS = frozenset(
     }
 )
 
+PARTITION_ALL = "all"
+# Pilot safety: local-model runs may only target the development partition
+# so held-out scenarios can never influence model or prompt tuning.
+LOCAL_MODEL_REQUIRED_PARTITION = corpus.PARTITION_DEVELOPMENT
+PARTITION_CHOICES = (
+    PARTITION_ALL,
+    corpus.PARTITION_DEVELOPMENT,
+    corpus.PARTITION_HELD_OUT,
+)
+
 
 def _is_adapter_outcome(rule_id: str | None) -> bool:
     if rule_id is None:
@@ -70,13 +88,19 @@ async def _run_case(
     observer: JsonlObserver,
     *,
     timeout_seconds: float,
+    partition: str,
     trial: int = 0,
 ) -> dict[str, Any]:
     """Run one corpus case and return a normalized result record.
 
     The authoritative decision comes from the proxy's JSONL observation for
     this call (``policy_action``/``policy_rule_id``); the MCP result only
-    tells us whether the call was blocked or executed.
+    tells us whether the call was blocked or executed. Every record carries
+    its pre-registered ``partition`` plus an explicit per-scenario verdict:
+    ``matches_expected`` (True/False, or ``None`` when the record failed at
+    the harness level) and ``failure_reason`` (None on success, otherwise
+    ``false_allow`` / ``false_deny`` / the harness error). A failure is
+    never silently counted as a pass.
     """
     import time
 
@@ -133,17 +157,23 @@ async def _run_case(
                 error = "harness_mismatch"
     elif error is None:
         error = "harness_no_observation"
+    matches_expected, failure_reason = classify_outcome(
+        expected=case.expected, action=policy_action, error=error
+    )
     record: dict[str, Any] = {
         "id": case.id,
         "trial": trial,
         "tool_name": case.tool_name,
         "category": case.category,
         "label": case.label,
+        "partition": partition,
         "expected": case.expected,
         "blocked": blocked,
         "policy_action": policy_action,
         "policy_rule_id": policy_rule_id,
         "adapter_outcome": adapter_outcome,
+        "matches_expected": matches_expected,
+        "failure_reason": failure_reason,
         "error": error,
         "latency_ms": latency_ms,
     }
@@ -581,6 +611,34 @@ def summarize(
         },
         "by_category": by_category,
         "adapter_outcomes": adapter_outcomes,
+        "adapter_outcome_detail": {
+            "successful_decisions": int(adapter_outcomes.get("adapter", 0)),
+            "timeouts": int(adapter_outcomes.get("adapter_timeout", 0)),
+            "malformed_responses": int(adapter_outcomes.get("adapter_invalid", 0)),
+            "provider_errors": int(adapter_outcomes.get("adapter_error", 0)),
+            "undecided": int(adapter_outcomes.get("adapter_undecided", 0)),
+            "missing_adapter": int(adapter_outcomes.get("adapter_missing", 0)),
+            "definitions": {
+                "adapter": "adapter returned a parsed ALLOW or DENY decision",
+                "adapter_timeout": "engine adapter deadline exceeded; fail-closed DENY",
+                "adapter_invalid": (
+                    "response content could not be parsed into a valid decision "
+                    "(malformed model output or wire payload); fail-closed DENY"
+                ),
+                "adapter_error": (
+                    "provider, transport, or configuration failure; fail-closed DENY"
+                ),
+                "adapter_undecided": "adapter returned UNDECIDED; fail-closed DENY",
+                "adapter_missing": (
+                    "adapter-tier tool with no adapter configured; fail-closed DENY"
+                ),
+            },
+            "note": (
+                "Every adapter failure mode maps to a DENY. Mocked or injected "
+                "adapter responses used in tests are fixtures, never model "
+                "results; only mode=local-model performs live local inference."
+            ),
+        },
         "latency_ms": _percentiles(executed_latencies),
         "latency_note": (
             "client_observed_ms wall clock over executed cases; includes "
@@ -707,12 +765,154 @@ def failure_analysis(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def select_cases(partition: str = PARTITION_ALL) -> list[CorpusCase]:
+    """Return the corpus scenarios for ``partition``, in stable corpus order.
+
+    ``"all"`` (the default for rules-only and replay runs) selects every
+    scenario. ``"development"`` / ``"held-out"`` select exactly the scenarios
+    with that pre-registered partition assignment — deterministic, derived
+    from scenario ids alone, never re-split or guessed. A scenario without a
+    partition assignment, an empty selection, or a partition that leaks a
+    non-matching scenario is a hard error: the run fails closed rather than
+    silently including an unassigned scenario in a pilot selection.
+    """
+    if partition not in PARTITION_CHOICES:
+        raise ValueError(
+            f"invalid partition {partition!r}; must be one of {', '.join(PARTITION_CHOICES)}"
+        )
+    cases = corpus.load_corpus()  # stable corpus order; no shuffling
+    if partition == PARTITION_ALL:
+        return cases
+    assigned = corpus.partition_map()
+    selected: list[CorpusCase] = []
+    for case in cases:
+        case_partition = assigned.get(case.id)
+        if case_partition is None:
+            raise ValueError(
+                f"scenario {case.id!r} has no partition assignment; refusing to "
+                "guess a selection for a pilot run (fail closed)"
+            )
+        if case_partition == partition:
+            selected.append(case)
+    if not selected:
+        raise ValueError(f"partition {partition!r} selects no scenarios; refusing")
+    wrong = [c.id for c in selected if assigned.get(c.id) != partition]
+    if wrong:  # defensive; unreachable with a consistent partition_map
+        raise ValueError(f"partition selection leaked non-{partition} scenarios: {wrong[:5]}")
+    return selected
+
+
+def plan_local_model_calls(
+    *,
+    cases: list[CorpusCase],
+    trials: int,
+    adapter_tools: set[str] | frozenset[str] | list[str],
+    max_calls: int,
+) -> dict[str, Any]:
+    """Return the pre-run call budget for a local-model pilot; fail closed if exceeded.
+
+    Deterministic tiers (hard rules, allow/deny lists, plain rules) never
+    reach the model, but the safe worst case is that every adapter-tier
+    scenario in the selection consults the model once per trial. If that
+    upper bound exceeds ``max_calls`` (the provider's hard per-run cap), the
+    run is refused *before* any model call rather than dying part-way with a
+    half-finished report.
+    """
+    tools = set(adapter_tools)
+    upper = trials * sum(1 for case in cases if case.tool_name in tools)
+    if upper > max_calls:
+        raise ValueError(
+            f"local-model call budget exceeded before the run: worst case {upper} "
+            f"adapter-tier calls ({len(cases)} cases x {trials} trials, "
+            f"adapter_tools={sorted(tools)}) > max_calls={max_calls}; raise "
+            "--local-model-max-calls or reduce --trials"
+        )
+    return {
+        "limit": int(max_calls),
+        "planned_worst_case_calls": int(upper),
+        "note": (
+            "planned_worst_case_calls counts every adapter-tier scenario in the "
+            "selected partition per trial; deterministic tiers may bypass the "
+            "model, so actual calls are at most this figure and always at most "
+            "the hard limit. The provider refuses further calls once the limit "
+            "is reached and the engine fails those calls closed (DENY)."
+        ),
+    }
+
+
+def inference_provenance(
+    *, adapter_replay: str | Path | None, local_model: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Describe where decisions came from; never present fixtures as model output.
+
+    Three mutually exclusive sources exist and must never be conflated in a
+    report:
+
+    - ``rules-only``: deterministic policy tiers; no model is involved.
+    - ``fixture-replay``: recorded decisions replayed from a file; NOT fresh
+      model output and NOT evidence of model quality or reproducibility.
+    - ``live-local-model``: a real on-disk model served over loopback; the
+      only mode in which any inference happens.
+    """
+    if local_model:
+        return {
+            "source": "live-local-model",
+            "live_inference": True,
+            "note": (
+                "Decisions for adapter-tier calls come from a real local model "
+                "served over loopback only. This is the only mode that performs "
+                "inference; it requires the development partition explicitly."
+            ),
+        }
+    if adapter_replay:
+        return {
+            "source": "fixture-replay",
+            "live_inference": False,
+            "note": (
+                "Adapter-tier decisions are replayed from a recorded fixture "
+                "file. Replay output is NOT model output and NOT evidence of "
+                "model quality, reproducibility, or inference behaviour."
+            ),
+        }
+    return {
+        "source": "rules-only",
+        "live_inference": False,
+        "note": (
+            "All decisions come from deterministic policy rules; no model, "
+            "adapter, network, or randomness is involved."
+        ),
+    }
+
+
+def classify_outcome(
+    *, expected: str, action: str | None, error: str | None
+) -> tuple[bool | None, str | None]:
+    """Classify one scenario decision as match / false-allow / false-deny / failed.
+
+    Returns ``(matches_expected, failure_reason)``. ``matches_expected`` is
+    ``None`` when the record failed at the harness level (``error`` set, or
+    no decision was observed): a failure is never silently counted as a pass.
+    """
+    if error is not None:
+        return None, error
+    if action is None:
+        return None, "missing_decision"
+    if expected not in ("ALLOW", "DENY"):
+        return None, "invalid_expected_value"
+    if action == expected:
+        return True, None
+    if expected == "DENY":
+        return False, "false_allow"
+    return False, "false_deny"
+
+
 async def evaluate(
     observe_path: str | None = None,
     *,
     policy_path: str | Path | None = None,
     adapter_replay: str | Path | None = None,
     local_model: dict[str, Any] | None = None,
+    partition: str = PARTITION_ALL,
     timeout_seconds: float = 30.0,
     trials: int = 1,
     bootstrap_seed: int = 0,
@@ -730,12 +930,45 @@ async def evaluate(
     across trials; the trial count is reported so a future stochastic
     adapter can be compared on an equal footing. Execution failures stay
     separate from successful decisions in every aggregate.
+
+    ``partition`` selects scenarios from the pre-registered development/
+    held-out split (``"all"`` is the default and selects everything). A
+    ``local_model`` run REQUIRES ``partition="development"`` and refuses
+    ``"all"`` or ``"held-out"`` *before* any subprocess, proxy, or model
+    call happens: held-out scenarios must never influence model or prompt
+    tuning. ``ValueError`` (including :class:`~agent44.policy.PolicyError`)
+    is raised for any refused configuration; nothing is executed then.
     """
     if trials < 1:
         raise ValueError("trials must be >= 1")
     corpus.validate_cases(list(corpus.CASES))
+    if partition not in PARTITION_CHOICES:
+        raise ValueError(
+            f"invalid partition {partition!r}; must be one of {', '.join(PARTITION_CHOICES)}"
+        )
+    if local_model and partition != LOCAL_MODEL_REQUIRED_PARTITION:
+        raise ValueError(
+            "local-model runs are restricted to the development partition: pass "
+            "partition='development' (--partition development). Refused "
+            f"partition={partition!r} so held-out scenarios (or the full corpus) "
+            "can never influence model/prompt tuning. No model was contacted."
+        )
     policy = str(policy_path) if policy_path is not None else str(EVAL_POLICY)
-    cases = corpus.load_corpus()  # stable corpus order; no shuffling
+    cases = select_cases(partition)  # stable corpus order; no shuffling
+    partition_of = corpus.partition_map()
+
+    call_budget: dict[str, Any] | None = None
+    if local_model:
+        # Load and validate the policy before any subprocess or model call so
+        # a bad policy path fails closed instead of crashing mid-run, then
+        # freeze the call budget for this selection and trial count.
+        engine = policy_module.PolicyEngine.from_path(policy)
+        call_budget = plan_local_model_calls(
+            cases=cases,
+            trials=trials,
+            adapter_tools=engine.policy.adapter_tools,
+            max_calls=int(local_model.get("max_calls", 256)),
+        )
 
     # The proxy's JSONL observation log is the authoritative per-call decision
     # source. The runner ALWAYS runs the proxy with its own observation file so
@@ -774,6 +1007,7 @@ async def evaluate(
                                 case,
                                 observer,
                                 timeout_seconds=timeout_seconds,
+                                partition=partition_of.get(case.id, "unassigned"),
                                 trial=trial,
                             )
                         )
@@ -787,16 +1021,48 @@ async def evaluate(
                 pass
 
     mode = "local-model" if local_model else ("adapter-replay" if adapter_replay else "rules-only")
+    held_out_selected = sum(
+        1 for case in cases if partition_of.get(case.id) == corpus.PARTITION_HELD_OUT
+    )
+    provenance = inference_provenance(adapter_replay=adapter_replay, local_model=local_model)
+    run_bounds: dict[str, Any] = {
+        "harness_per_case_timeout_seconds": float(timeout_seconds),
+        "adapter_decision_timeout_seconds": float(policy_module.ADAPTER_TIMEOUT_SECONDS),
+        "trials": int(trials),
+        "selected_scenarios": len(cases),
+        "worst_case_harness_seconds": round(len(cases) * trials * float(timeout_seconds), 3),
+        "note": (
+            "A run that exceeds the harness worst case (every case timing out "
+            "at the per-case bound) must be treated as a failure. The adapter "
+            "decision timeout is enforced per adapter-tier call inside the "
+            "policy engine and fails closed to DENY; harness timeouts are "
+            "recorded per record as harness_timeout and never as a pass."
+        ),
+    }
     return {
         "corpus_version": corpus.CORPUS_VERSION,
         "policy": policy,
         "mode": mode,
+        "inference": provenance,
         "adapter_replay": str(adapter_replay) if adapter_replay else None,
         "local_model": local_model,
         "stochastic": bool(local_model),
         "trials": trials,
         "scenarios": len(cases),
         "bootstrap_seed": bootstrap_seed,
+        "partition_selection": {
+            "requested": partition,
+            "held_out_scenarios_included": held_out_selected,
+            "note": (
+                "Scenarios are selected by the pre-registered, id-derived "
+                "partition assignment; nothing is re-split or guessed. "
+                "Local-model pilots must request 'development' explicitly and "
+                "include zero held-out scenarios; this count makes that "
+                "auditable per run."
+            ),
+        },
+        "run_bounds": run_bounds,
+        "model_call_budget": call_budget,
         "determinism_note": (
             "Rules-only and replay modes are deterministic; every trial of a "
             "scenario yields an identical decision. trials is reported so a "
@@ -810,7 +1076,8 @@ async def evaluate(
                 "and scenario-level aggregation + bootstrap are reported. The "
                 "local_model block records the exact model tag, host, and call "
                 "limit; add the model digest from 'ollama show' to the "
-                "manifest for a fully pinned freeze."
+                "manifest for a fully pinned freeze. Local-model runs cover "
+                "only the development partition (see partition_selection)."
             )
         ),
         "blocking": True,
@@ -855,19 +1122,36 @@ def build_manifest(
 ) -> dict[str, Any]:
     """Build a reproducible experiment manifest for a freeze.
 
-    Records the git commit id and SHA-256 hashes of the corpus module, the
-    evaluation policy, the frozen protocol, the amendment, the replay
-    fixture, and the runner itself, plus the dev/held-out partition counts.
-    When ``local_model`` is supplied (a strictly-local experiment), the exact
-    model tag, loopback endpoint, call limit, and (if provided) model digest
-    are recorded so the run is fully pinned. Contains no credentials or
-    sensitive values: it hashes files, it never reads or embeds secrets.
+    Records the git commit id and SHA-256 hashes of the decision-relevant
+    sources (runner, corpus, policy engine, model adapter, local provider,
+    proxy, observation modules), the evaluation policy, the frozen protocol,
+    the amendment, and the replay fixture, plus the dev/held-out partition
+    counts. When ``local_model`` is supplied (a strictly-local experiment),
+    the exact model tag, loopback endpoint, call limit, and (if provided)
+    model digest are recorded so the run is fully pinned, and the
+    development-only pilot selection requirement is recorded alongside it.
+    Contains no credentials or sensitive values: it hashes files, it never
+    reads or embeds secrets.
     """
     evaluation_dir = Path(__file__).resolve().parent.parent.parent / "evaluation"
+    src_dir = Path(__file__).resolve().parent
     policy = Path(policy_path) if policy_path is not None else EVAL_POLICY
     protocol = evaluation_dir / "PROTOCOL_v1.md"
     amendment = evaluation_dir / "PROTOCOL_v1.1_AMENDMENT.md"
     replay = evaluation_dir / "adapter_replay_fixture.json"
+    pilot_selection = (
+        {
+            "required_partition": LOCAL_MODEL_REQUIRED_PARTITION,
+            "enforced": True,
+            "note": (
+                "Local-model pilot runs may only select the development "
+                "partition; the evaluator refuses held-out or full-corpus "
+                "local-model runs before contacting any model."
+            ),
+        }
+        if local_model
+        else None
+    )
     return {
         "protocol": "PROTOCOL_v1.1_AMENDMENT",
         "generated_by": "agent44.eval_runner manifest",
@@ -876,11 +1160,31 @@ def build_manifest(
         "artifacts": {
             "corpus_module": {
                 "path": "src/agent44/corpus.py",
-                "sha256": _sha256_file(Path(__file__).resolve().parent / "corpus.py"),
+                "sha256": _sha256_file(src_dir / "corpus.py"),
             },
             "eval_runner": {
                 "path": "src/agent44/eval_runner.py",
                 "sha256": _sha256_file(Path(__file__).resolve()),
+            },
+            "policy_engine": {
+                "path": "src/agent44/policy.py",
+                "sha256": _sha256_file(src_dir / "policy.py"),
+            },
+            "model_adapter": {
+                "path": "src/agent44/model_adapter.py",
+                "sha256": _sha256_file(src_dir / "model_adapter.py"),
+            },
+            "local_provider": {
+                "path": "src/agent44/local_provider.py",
+                "sha256": _sha256_file(src_dir / "local_provider.py"),
+            },
+            "proxy": {
+                "path": "src/agent44/proxy.py",
+                "sha256": _sha256_file(src_dir / "proxy.py"),
+            },
+            "observe": {
+                "path": "src/agent44/observe.py",
+                "sha256": _sha256_file(src_dir / "observe.py"),
             },
             "policy": {
                 "path": str(policy),
@@ -910,6 +1214,7 @@ def build_manifest(
         },
         "independent_cases": None,
         "local_model": local_model,
+        "pilot_selection": pilot_selection,
         "limitations": [
             "All scenarios are hand-authored-synthetic; no independent or "
             "external cases exist, so independent-review claims are "
@@ -968,6 +1273,18 @@ def main(argv: list[str] | None = None) -> int:
             "stochastic adapter's intervals (default: 0). Fixed seed makes "
             "bootstrap output reproducible; rules-only/replay modes are "
             "deterministic regardless of seed."
+        ),
+    )
+    parser.add_argument(
+        "--partition",
+        choices=PARTITION_CHOICES,
+        default=PARTITION_ALL,
+        help=(
+            "Scenario selection: 'all' (default; rules-only/replay runs), or "
+            "'development'/'held-out' from the pre-registered id-derived "
+            "split. Local-model runs require 'development' and fail closed "
+            "(exit 2, nothing executed) on anything else so held-out "
+            "scenarios can never tune the model or prompt."
         ),
     )
     parser.add_argument(
@@ -1042,15 +1359,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    report = asyncio.run(
-        evaluate(
-            observe_path=args.observe,
-            adapter_replay=args.adapter_replay,
-            local_model=local_model,
-            trials=args.trials,
-            bootstrap_seed=args.seed,
+    try:
+        report = asyncio.run(
+            evaluate(
+                observe_path=args.observe,
+                adapter_replay=args.adapter_replay,
+                local_model=local_model,
+                partition=args.partition,
+                trials=args.trials,
+                bootstrap_seed=args.seed,
+            )
         )
-    )
+    except ValueError as exc:
+        # Fail-closed configuration errors (invalid partition, local-model
+        # partition restriction, call budget exceeded, bad policy file;
+        # PolicyError subclasses ValueError). Nothing was executed.
+        print(f"agent44-eval: {exc}", file=sys.stderr)
+        return 2
     out_path = Path(args.output)
     out_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",

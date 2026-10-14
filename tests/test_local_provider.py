@@ -25,12 +25,13 @@ from agent44.local_provider import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     LocalProviderError,
+    LocalProviderResponseError,
     OllamaProvider,
     assert_loopback_host,
     local_model_adapter,
 )
 from agent44.model_adapter import ModelDecisionAdapter
-from agent44.policy import Action, PolicyEngine
+from agent44.policy import Action, AdapterParseError, PolicyEngine
 from agent44.proxy import RulesOnlyAdapter, parse_downstream_args
 
 # A valid streamed Ollama body: newline-delimited JSON fragments.
@@ -322,7 +323,10 @@ def test_local_provider_malformed_model_output_fails_closed(tmp_path: Path) -> N
     adapter = local_model_adapter(provider)
     decision = run(engine.decide("review_tool", {"ok": False}, adapter))
     assert decision.action is Action.DENY
-    assert decision.rule_id == "adapter_error"
+    # Malformed wire content is a response-parse failure (adapter_invalid);
+    # transport/status failures above stay adapter_error.
+    assert decision.rule_id == "adapter_invalid"
+    assert "LocalProviderResponseError" in decision.reason
 
 
 def test_local_model_allow_is_honored_when_undecided(tmp_path: Path) -> None:
@@ -413,4 +417,56 @@ def test_manifest_records_local_model_config() -> None:
 def test_manifest_local_model_none_by_default() -> None:
     manifest = build_manifest()
     assert manifest["local_model"] is None
+
+
+# --- response-parse failures, hard-rule invariance (Milestone 4d) ------------
+
+
+def test_response_error_is_both_provider_and_parse_error() -> None:
+    assert issubclass(LocalProviderResponseError, LocalProviderError)
+    assert issubclass(LocalProviderResponseError, AdapterParseError)
+
+
+def test_response_shape_failures_raise_response_error() -> None:
+    for body in (
+        b"garbage not json\n",
+        b"\xff\xfe not utf8\n",
+        b'"just a string"\n',
+        b'{"response": 42}\n',
+    ):
+        provider = provider_with(lambda request, body=body: httpx.Response(200, content=body))
+        with pytest.raises(LocalProviderResponseError):
+            run(provider.complete("prompt"))
+
+
+def test_hard_rule_on_adapter_tool_cannot_be_overridden(tmp_path: Path) -> None:
+    """A hard-deny rule on an adapter-tier tool always wins over model ALLOW."""
+    policy = dedent(
+        """
+        version: "1"
+        default_deny: true
+        adapter_tools: [review_tool]
+        rules:
+          - id: review-tool-locked
+            tool: review_tool
+            action: DENY
+            when:
+              field: ok
+              field_exists: true
+            reason: "review is locked during the pilot"
+            hard: true
+        """
+    ).lstrip()
+    path = tmp_path / "policy.yaml"
+    path.write_text(policy, encoding="utf-8")
+    engine = PolicyEngine.from_path(path)
+    allow_body = json.dumps({"response": json.dumps({"action": "ALLOW", "reason": "ok"})})
+    provider = provider_with(
+        lambda request: httpx.Response(200, content=(allow_body + "\n").encode("utf-8"))
+    )
+    adapter = local_model_adapter(provider)
+    decision = run(engine.decide("review_tool", {"ok": False}, adapter))
+    assert decision.action is Action.DENY
+    assert decision.rule_id == "review-tool-locked"
+    assert provider.calls_made == 0, "hard rules must decide before the adapter tier"
 

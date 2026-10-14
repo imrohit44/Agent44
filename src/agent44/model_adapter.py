@@ -37,7 +37,13 @@ from pathlib import Path
 from typing import Any
 
 from agent44 import observe
-from agent44.policy import Action, AdapterDecision, DecisionAdapter, PolicyRule
+from agent44.policy import (
+    Action,
+    AdapterDecision,
+    AdapterParseError,
+    DecisionAdapter,
+    PolicyRule,
+)
 
 # Strict parser limits (treat model output as untrusted).
 MAX_OUTPUT_CHARS = 8192
@@ -50,8 +56,49 @@ _RULE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 CompleteFn = Callable[[str], Awaitable[str]]
 
 
-class ModelOutputError(ValueError):
-    """Raised when model output cannot be parsed into a valid decision."""
+MAX_ERROR_DETAIL_LEN = 160
+"""Upper bound (chars) for model-output excerpts embedded in error messages."""
+
+
+class ModelOutputError(AdapterParseError):
+    """Raised when model output cannot be parsed into a valid decision.
+
+    Subclassing :class:`~agent44.policy.AdapterParseError` makes the engine
+    map parse failures to the fail-closed ``adapter_invalid`` outcome (a
+    DENY), kept distinct from provider/transport failures (``adapter_error``).
+    """
+
+
+def _bounded_text(text: str, limit: int = MAX_ERROR_DETAIL_LEN) -> str:
+    """Return a printable, single-line excerpt of ``text`` capped at ``limit``.
+
+    Model output is untrusted: error messages that echo it must never carry
+    multi-kilobyte dumps or control characters into logs or reports.
+    """
+    cleaned = "".join(ch if ch.isprintable() else " " for ch in text)
+    cleaned = " ".join(cleaned.split())
+    if len(cleaned) > limit:
+        cleaned = cleaned[: max(0, limit - 3)].rstrip() + "..."
+    return cleaned
+
+
+def sanitized_response_summary(text: str) -> dict[str, Any]:
+    """Return a secret-safe diagnostic fingerprint of raw model output.
+
+    Raw model responses must never be written to logs, observation files, or
+    replay fixtures. When a parser failure must be recorded for diagnosis,
+    use this helper instead: it preserves the SHA-256 of the exact raw text,
+    its character count, and a short printable excerpt. The strict parser
+    only ever receives model output derived from a secret-free prompt (safe
+    argument metadata), so an excerpt cannot echo call secrets.
+    """
+    if not isinstance(text, str):
+        raise ModelOutputError("response summary requires a string")
+    return {
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "chars": len(text),
+        "excerpt": _bounded_text(text.strip()),
+    }
 
 
 class ReplayError(ValueError):
@@ -73,7 +120,7 @@ def _require_rule_id(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not _RULE_ID_RE.match(value):
-        raise ModelOutputError(f"invalid rule_id: {value!r}")
+        raise ModelOutputError(f"invalid rule_id: {_bounded_text(repr(value))}")
     if len(value) > MAX_RULE_ID_LEN:
         raise ModelOutputError("rule_id exceeds maximum length")
     return value
@@ -104,11 +151,13 @@ def parse_model_decision(text: str) -> AdapterDecision:
 
     extra = set(data) - ALLOWED_KEYS
     if extra:
-        raise ModelOutputError(f"unexpected fields in model output: {sorted(extra)}")
+        raise ModelOutputError(
+            f"unexpected fields in model output: {_bounded_text(str(sorted(extra)))}"
+        )
 
     action_raw = data.get("action")
     if action_raw not in ("ALLOW", "DENY"):
-        raise ModelOutputError(f"invalid or missing action: {action_raw!r}")
+        raise ModelOutputError(f"invalid or missing action: {_bounded_text(repr(action_raw))}")
 
     reason = _sanitize_reason(data.get("reason"))
     if not reason:
