@@ -712,6 +712,7 @@ async def evaluate(
     *,
     policy_path: str | Path | None = None,
     adapter_replay: str | Path | None = None,
+    local_model: dict[str, Any] | None = None,
     timeout_seconds: float = 30.0,
     trials: int = 1,
     bootstrap_seed: int = 0,
@@ -746,6 +747,13 @@ async def evaluate(
         proxy_args = [*PROXY_MODULE, "--policy", policy, "--observe", run_observe]
         if adapter_replay:
             proxy_args += ["--adapter-replay", str(adapter_replay)]
+        if local_model:
+            lm = local_model
+            proxy_args += ["--local-model", str(lm["model"])]
+            proxy_args += ["--local-model-host", str(lm.get("host", "127.0.0.1"))]
+            proxy_args += ["--local-model-port", str(lm.get("port", 11434))]
+            proxy_args += ["--local-model-timeout", str(lm.get("timeout_seconds", 60.0))]
+            proxy_args += ["--local-model-max-calls", str(lm.get("max_calls", 256))]
         proxy_args += ["--", sys.executable, *DEMO_MODULE]
         params = StdioServerParameters(command=sys.executable, args=proxy_args)
         observer = JsonlObserver(run_observe)
@@ -778,22 +786,32 @@ async def evaluate(
             except OSError:
                 pass
 
-    mode = "adapter-replay" if adapter_replay else "rules-only"
+    mode = "local-model" if local_model else ("adapter-replay" if adapter_replay else "rules-only")
     return {
         "corpus_version": corpus.CORPUS_VERSION,
         "policy": policy,
         "mode": mode,
         "adapter_replay": str(adapter_replay) if adapter_replay else None,
+        "local_model": local_model,
+        "stochastic": bool(local_model),
         "trials": trials,
         "scenarios": len(cases),
         "bootstrap_seed": bootstrap_seed,
-        "stochastic": False,
         "determinism_note": (
             "Rules-only and replay modes are deterministic; every trial of a "
             "scenario yields an identical decision. trials is reported so a "
             "future stochastic adapter can be compared on an equal footing. A "
             "deterministic replay adapter is NOT evidence of model "
             "reproducibility."
+            if not local_model
+            else (
+                "Local-model mode calls an on-disk Ollama model over loopback "
+                "only. It may be stochastic: per-trial decisions are preserved "
+                "and scenario-level aggregation + bootstrap are reported. The "
+                "local_model block records the exact model tag, host, and call "
+                "limit; add the model digest from 'ollama show' to the "
+                "manifest for a fully pinned freeze."
+            )
         ),
         "blocking": True,
         "attack_success": None,
@@ -831,14 +849,19 @@ def _git_commit() -> str | None:
         return None
 
 
-def build_manifest(policy_path: str | Path | None = None) -> dict[str, Any]:
+def build_manifest(
+    policy_path: str | Path | None = None,
+    local_model: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build a reproducible experiment manifest for a freeze.
 
     Records the git commit id and SHA-256 hashes of the corpus module, the
     evaluation policy, the frozen protocol, the amendment, the replay
     fixture, and the runner itself, plus the dev/held-out partition counts.
-    Contains no credentials or sensitive values: it hashes files, it never
-    reads or embeds secrets. Hash inputs are source and config only.
+    When ``local_model`` is supplied (a strictly-local experiment), the exact
+    model tag, loopback endpoint, call limit, and (if provided) model digest
+    are recorded so the run is fully pinned. Contains no credentials or
+    sensitive values: it hashes files, it never reads or embeds secrets.
     """
     evaluation_dir = Path(__file__).resolve().parent.parent.parent / "evaluation"
     policy = Path(policy_path) if policy_path is not None else EVAL_POLICY
@@ -886,6 +909,7 @@ def build_manifest(policy_path: str | Path | None = None) -> dict[str, Any]:
             ),
         },
         "independent_cases": None,
+        "local_model": local_model,
         "limitations": [
             "All scenarios are hand-authored-synthetic; no independent or "
             "external cases exist, so independent-review claims are "
@@ -946,10 +970,65 @@ def main(argv: list[str] | None = None) -> int:
             "deterministic regardless of seed."
         ),
     )
+    parser.add_argument(
+        "--local-model",
+        default=None,
+        metavar="TAG",
+        help=(
+            "Opt in to a local Ollama model (e.g. 'llama3.2:1b'). Calls only "
+            "http://127.0.0.1:11434. Off by default; default/CI runs stay "
+            "offline on the rules-only/replay paths. A model must already be "
+            "installed (run 'ollama pull <TAG>' manually); the evaluator "
+            "never downloads a model."
+        ),
+    )
+    parser.add_argument(
+        "--local-model-host",
+        default="127.0.0.1",
+        help="Loopback host for the local model (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--local-model-port",
+        type=int,
+        default=11434,
+        help="Loopback port for the local model (default: 11434).",
+    )
+    parser.add_argument(
+        "--local-model-timeout",
+        type=float,
+        default=60.0,
+        help="Per-request timeout in seconds (default: 60).",
+    )
+    parser.add_argument(
+        "--local-model-max-calls",
+        type=int,
+        default=256,
+        help="Hard cap on local-model calls for one run (default: 256).",
+    )
+    parser.add_argument(
+        "--local-model-digest",
+        default=None,
+        help=(
+            "Optional model digest (e.g. from 'ollama show --json <TAG>') to "
+            "record in the report/manifest for a fully pinned freeze."
+        ),
+    )
     args = parser.parse_args(argv)
 
+    local_model = None
+    if args.local_model:
+        local_model = {
+            "model": args.local_model,
+            "host": args.local_model_host,
+            "port": args.local_model_port,
+            "timeout_seconds": args.local_model_timeout,
+            "max_calls": args.local_model_max_calls,
+        }
+        if args.local_model_digest:
+            local_model["digest"] = args.local_model_digest
+
     if args.command == "manifest":
-        manifest = build_manifest()
+        manifest = build_manifest(local_model=local_model)
         out_path = Path(args.output)
         out_path.write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -967,6 +1046,7 @@ def main(argv: list[str] | None = None) -> int:
         evaluate(
             observe_path=args.observe,
             adapter_replay=args.adapter_replay,
+            local_model=local_model,
             trials=args.trials,
             bootstrap_seed=args.seed,
         )

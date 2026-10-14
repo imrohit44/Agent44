@@ -27,6 +27,15 @@ from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
 from agent44 import observe
+from agent44.local_provider import (
+    DEFAULT_HOST,
+    DEFAULT_MAX_CALLS,
+    DEFAULT_PORT,
+    DEFAULT_TIMEOUT_SECONDS,
+    LocalProviderError,
+    OllamaProvider,
+    local_model_adapter,
+)
 from agent44.model_adapter import ReplayAdapter, ReplayError
 from agent44.observe import JsonlObserver
 from agent44.policy import (
@@ -267,6 +276,45 @@ def parse_downstream_args(
         ),
     )
     parser.add_argument(
+        "--local-model",
+        metavar="TAG",
+        default=None,
+        help=(
+            "OPT-IN local-model adapter. Provide an Ollama model tag to decide "
+            "adapter-tier tool calls with a strictly-local, loopback-only "
+            "provider (http://127.0.0.1:11434). No cloud calls, no fallback, "
+            "no automatic download; the model must already be installed. "
+            "Omitting this flag keeps the deterministic offline path."
+        ),
+    )
+    parser.add_argument(
+        "--local-model-host",
+        metavar="HOST",
+        default=DEFAULT_HOST,
+        help="Loopback host for the local model server (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--local-model-port",
+        metavar="PORT",
+        type=int,
+        default=DEFAULT_PORT,
+        help="Loopback port for the local model server (default: 11434).",
+    )
+    parser.add_argument(
+        "--local-model-timeout",
+        metavar="SECONDS",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help="Per-request timeout for local model calls (default: 60).",
+    )
+    parser.add_argument(
+        "--local-model-max-calls",
+        metavar="N",
+        type=int,
+        default=DEFAULT_MAX_CALLS,
+        help="Hard cap on local model calls for this process (default: 256).",
+    )
+    parser.add_argument(
         "command",
         nargs=argparse.REMAINDER,
         help="Downstream server command and arguments (after '--').",
@@ -285,7 +333,20 @@ def parse_downstream_args(
     # Raises PolicyError when --policy is given but the file is unusable.
     policy = PolicyEngine.from_path(args.policy) if args.policy else None
     adapter: DecisionAdapter
-    if args.adapter_replay:
+    if args.local_model:
+        try:
+            provider = OllamaProvider(
+                args.local_model,
+                host=args.local_model_host,
+                port=args.local_model_port,
+                timeout=args.local_model_timeout,
+                max_calls=args.local_model_max_calls,
+            )
+            adapter = local_model_adapter(provider)
+        except LocalProviderError as exc:
+            print(f"agent44: local model provider error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+    elif args.adapter_replay:
         try:
             adapter = ReplayAdapter.from_file(args.adapter_replay)
         except ReplayError as exc:
