@@ -8,6 +8,7 @@ cannot inflate reported performance.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -425,3 +426,119 @@ def test_main_local_model_without_development_partition_fails_closed(
     code = main(["run", "--local-model", "llama3.2:1b", "-o", str(out_default)])
     assert code == 2
     assert not out_default.exists()
+
+
+# --- explicit --select scenario subsets (fail-closed bounded pilots) -------
+
+
+def test_select_cases_explicit_ids_select_exact_subset_in_corpus_order() -> None:
+    development = select_cases(corpus.PARTITION_DEVELOPMENT)
+    ids = [development[i].id for i in (0, 5, len(development) - 1)]
+    # Supplied out of order; the result must still follow stable corpus order.
+    chosen = select_cases(corpus.PARTITION_DEVELOPMENT, select_ids=list(reversed(ids)))
+    assert [c.id for c in chosen] == ids
+    assert len(chosen) == 3
+
+
+def test_select_cases_explicit_ids_reject_unknown_id() -> None:
+    with pytest.raises(ValueError, match="not in the 'development' selection"):
+        select_cases(corpus.PARTITION_DEVELOPMENT, select_ids=["no-such-scenario-00"])
+
+
+def test_select_cases_explicit_ids_reject_other_partition_id() -> None:
+    held = select_cases(corpus.PARTITION_HELD_OUT)[0].id
+    with pytest.raises(ValueError, match="not in the 'development' selection"):
+        select_cases(corpus.PARTITION_DEVELOPMENT, select_ids=[held])
+    # The same id is valid when the requested partition matches its own.
+    own = select_cases(corpus.PARTITION_HELD_OUT, select_ids=[held])
+    assert [c.id for c in own] == [held]
+
+
+def test_select_cases_rejects_blank_duplicate_and_empty_ids() -> None:
+    dev = select_cases(corpus.PARTITION_DEVELOPMENT)[0].id
+    with pytest.raises(ValueError, match="at least one scenario id"):
+        select_cases(corpus.PARTITION_DEVELOPMENT, select_ids=[])
+    with pytest.raises(ValueError, match="blank scenario id"):
+        select_cases(corpus.PARTITION_DEVELOPMENT, select_ids=[" "])
+    with pytest.raises(ValueError, match="duplicate scenario id"):
+        select_cases(corpus.PARTITION_DEVELOPMENT, select_ids=[dev, dev])
+
+
+def test_evaluate_bad_select_fails_closed_before_execution(tmp_path: Path) -> None:
+    # The bad id must abort before the observer path or any subprocess exists.
+    observe = tmp_path / "never.jsonl"
+    with pytest.raises(ValueError, match="fail closed"):
+        asyncio.run(
+            evaluate(
+                observe_path=str(observe),
+                partition=corpus.PARTITION_DEVELOPMENT,
+                select_ids=["no-such-scenario-00"],
+            )
+        )
+    assert not observe.exists()
+
+
+def test_main_rejects_bad_select(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "never.json"
+    code = main(
+        ["run", "--partition", "development", "--select", "no-such-scenario-00", "-o", str(out)]
+    )
+    assert code == 2
+    assert not out.exists()
+    assert "fail closed" in capsys.readouterr().err
+
+
+def test_main_manifest_records_explicit_selection(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    development = select_cases(corpus.PARTITION_DEVELOPMENT)
+    ids = [development[0].id, development[1].id]
+    out = tmp_path / "manifest.json"
+    code = main(
+        [
+            "manifest",
+            "--partition",
+            "development",
+            "--select",
+            ",".join(ids),
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == 0
+    manifest = json.loads(out.read_text(encoding="utf-8"))
+    sel = manifest["explicit_selection"]
+    assert sel["ids"] == ids
+    assert sel["count"] == 2
+    assert sel["validated_partition"] == "development"
+
+
+def test_main_manifest_rejects_bad_select(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "never.json"
+    code = main(["manifest", "--select", "bogus-id", "-o", str(out)])
+    assert code == 2
+    assert not out.exists()
+    assert "fail closed" in capsys.readouterr().err
+
+
+def test_main_run_with_select_writes_exact_subset(tmp_path: Path) -> None:
+    # Full happy path: the runner executes exactly the declared scenarios
+    # through the real proxy subprocess and records the resolved ids.
+    development = select_cases(corpus.PARTITION_DEVELOPMENT)
+    ids = [development[0].id, development[1].id]
+    out = tmp_path / "report.json"
+    code = main(
+        ["run", "--partition", "development", "--select", ",".join(ids), "-o", str(out)]
+    )
+    assert code == 0
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["scenarios"] == 2
+    assert [r["id"] for r in report["results"]] == ids
+    sel = report["partition_selection"]["explicit_selection"]
+    assert sel["requested_ids"] == ids
+    assert sel["selected_ids"] == ids
+    assert sel["count"] == 2
+    assert report["partition_selection"]["held_out_scenarios_included"] == 0
+    assert report["inference"]["source"] == "rules-only"

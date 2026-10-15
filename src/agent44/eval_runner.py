@@ -15,7 +15,9 @@ stable contract; latency fields are informational only.
 
 Pilot safeguards: scenario selection honors the pre-registered development/
 held-out partition split (local-model runs are refused unless they select
-the development partition explicitly); the report records the decision
+the development partition explicitly); an explicit ``--select`` id list
+further bounds a run to a pre-declared scenario subset and is validated
+fail-closed against the selected partition; the report records the decision
 source (rules-only, fixture-replay, or live local model), run bounds, and
 the local-model call budget so a strictly-local pilot stays bounded and
 reproducible.
@@ -765,7 +767,9 @@ def failure_analysis(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def select_cases(partition: str = PARTITION_ALL) -> list[CorpusCase]:
+def select_cases(
+    partition: str = PARTITION_ALL, select_ids: list[str] | None = None
+) -> list[CorpusCase]:
     """Return the corpus scenarios for ``partition``, in stable corpus order.
 
     ``"all"`` (the default for rules-only and replay runs) selects every
@@ -775,6 +779,12 @@ def select_cases(partition: str = PARTITION_ALL) -> list[CorpusCase]:
     partition assignment, an empty selection, or a partition that leaks a
     non-matching scenario is a hard error: the run fails closed rather than
     silently including an unassigned scenario in a pilot selection.
+
+    ``select_ids`` (an explicit ``--select`` subset) further restricts the
+    selection to exactly those scenario ids, still in stable corpus order.
+    Blank, duplicate, unknown, and wrong-partition ids are hard errors raised
+    before any execution, so a bounded pilot can never smuggle a held-out
+    scenario into a development run or run more scenarios than declared.
     """
     if partition not in PARTITION_CHOICES:
         raise ValueError(
@@ -782,24 +792,59 @@ def select_cases(partition: str = PARTITION_ALL) -> list[CorpusCase]:
         )
     cases = corpus.load_corpus()  # stable corpus order; no shuffling
     if partition == PARTITION_ALL:
-        return cases
-    assigned = corpus.partition_map()
-    selected: list[CorpusCase] = []
-    for case in cases:
-        case_partition = assigned.get(case.id)
-        if case_partition is None:
-            raise ValueError(
-                f"scenario {case.id!r} has no partition assignment; refusing to "
-                "guess a selection for a pilot run (fail closed)"
-            )
-        if case_partition == partition:
-            selected.append(case)
+        selected = cases
+    else:
+        assigned = corpus.partition_map()
+        selected = []
+        for case in cases:
+            case_partition = assigned.get(case.id)
+            if case_partition is None:
+                raise ValueError(
+                    f"scenario {case.id!r} has no partition assignment; refusing to "
+                    "guess a selection for a pilot run (fail closed)"
+                )
+            if case_partition == partition:
+                selected.append(case)
+        wrong = [c.id for c in selected if assigned.get(c.id) != partition]
+        if wrong:  # defensive; unreachable with a consistent partition_map
+            raise ValueError(f"partition selection leaked non-{partition} scenarios: {wrong[:5]}")
+    if select_ids is not None:
+        selected = _restrict_to_explicit_ids(selected, select_ids, partition=partition)
     if not selected:
         raise ValueError(f"partition {partition!r} selects no scenarios; refusing")
-    wrong = [c.id for c in selected if assigned.get(c.id) != partition]
-    if wrong:  # defensive; unreachable with a consistent partition_map
-        raise ValueError(f"partition selection leaked non-{partition} scenarios: {wrong[:5]}")
     return selected
+
+
+def _restrict_to_explicit_ids(
+    selected: list[CorpusCase], select_ids: list[str], *, partition: str
+) -> list[CorpusCase]:
+    """Narrow ``selected`` to exactly ``select_ids`` (fail closed on any mismatch).
+
+    Ids are validated against the already partition-filtered selection: an id
+    that is unknown, belongs to a different partition, is blank, or is
+    repeated raises ``ValueError`` before anything executes. The returned
+    subset keeps stable corpus order regardless of the order the ids were
+    supplied in.
+    """
+    if not select_ids:
+        raise ValueError("--select requires at least one scenario id; refusing (fail closed)")
+    normalized: list[str] = []
+    for raw in select_ids:
+        text = str(raw).strip()
+        if not text:
+            raise ValueError("--select contains a blank scenario id; refusing (fail closed)")
+        normalized.append(text)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("--select contains duplicate scenario ids; refusing (fail closed)")
+    available = {case.id for case in selected}
+    missing = [sid for sid in normalized if sid not in available]
+    if missing:
+        raise ValueError(
+            f"--select scenario id(s) not in the {partition!r} selection: {missing[:5]}; "
+            "ids must exist and belong to the selected partition (fail closed)"
+        )
+    wanted = set(normalized)
+    return [case for case in selected if case.id in wanted]
 
 
 def plan_local_model_calls(
@@ -913,6 +958,7 @@ async def evaluate(
     adapter_replay: str | Path | None = None,
     local_model: dict[str, Any] | None = None,
     partition: str = PARTITION_ALL,
+    select_ids: list[str] | None = None,
     timeout_seconds: float = 30.0,
     trials: int = 1,
     bootstrap_seed: int = 0,
@@ -938,6 +984,12 @@ async def evaluate(
     call happens: held-out scenarios must never influence model or prompt
     tuning. ``ValueError`` (including :class:`~agent44.policy.PolicyError`)
     is raised for any refused configuration; nothing is executed then.
+
+    ``select_ids`` further bounds the run to an explicit scenario-id subset
+    (a bounded pilot). Every id must exist and belong to ``partition`` or the
+    run fails closed through :func:`select_cases` before any subprocess,
+    proxy, or model call; the resolved ids are recorded in the report under
+    ``partition_selection.explicit_selection``.
     """
     if trials < 1:
         raise ValueError("trials must be >= 1")
@@ -954,7 +1006,7 @@ async def evaluate(
             "can never influence model/prompt tuning. No model was contacted."
         )
     policy = str(policy_path) if policy_path is not None else str(EVAL_POLICY)
-    cases = select_cases(partition)  # stable corpus order; no shuffling
+    cases = select_cases(partition, select_ids=select_ids)  # stable order; no shuffling
     partition_of = corpus.partition_map()
 
     call_budget: dict[str, Any] | None = None
@@ -1053,6 +1105,20 @@ async def evaluate(
         "partition_selection": {
             "requested": partition,
             "held_out_scenarios_included": held_out_selected,
+            "explicit_selection": (
+                {
+                    "requested_ids": list(select_ids),
+                    "selected_ids": [case.id for case in cases],
+                    "count": len(cases),
+                    "note": (
+                        "Ids were supplied via --select, validated against the "
+                        "selected partition before execution, and are listed in "
+                        "stable corpus order."
+                    ),
+                }
+                if select_ids is not None
+                else None
+            ),
             "note": (
                 "Scenarios are selected by the pre-registered, id-derived "
                 "partition assignment; nothing is re-split or guessed. "
@@ -1119,6 +1185,8 @@ def _git_commit() -> str | None:
 def build_manifest(
     policy_path: str | Path | None = None,
     local_model: dict[str, Any] | None = None,
+    select_ids: list[str] | None = None,
+    select_partition: str | None = None,
 ) -> dict[str, Any]:
     """Build a reproducible experiment manifest for a freeze.
 
@@ -1129,7 +1197,9 @@ def build_manifest(
     counts. When ``local_model`` is supplied (a strictly-local experiment),
     the exact model tag, loopback endpoint, call limit, and (if provided)
     model digest are recorded so the run is fully pinned, and the
-    development-only pilot selection requirement is recorded alongside it.
+    development-only pilot selection requirement is recorded alongside it, and
+    an explicit ``select_ids`` subset is recorded verbatim under
+    ``explicit_selection``.
     Contains no credentials or sensitive values: it hashes files, it never
     reads or embeds secrets.
     """
@@ -1215,6 +1285,20 @@ def build_manifest(
         "independent_cases": None,
         "local_model": local_model,
         "pilot_selection": pilot_selection,
+        "explicit_selection": (
+            {
+                "ids": list(select_ids),
+                "count": len(select_ids),
+                "validated_partition": select_partition,
+                "note": (
+                    "Exact scenario ids declared via --select for this run; "
+                    "each id was validated against the selected partition "
+                    "before execution (fail closed)."
+                ),
+            }
+            if select_ids is not None
+            else None
+        ),
         "limitations": [
             "All scenarios are hand-authored-synthetic; no independent or "
             "external cases exist, so independent-review claims are "
@@ -1288,6 +1372,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--select",
+        default=None,
+        metavar="ID1,ID2,...",
+        help=(
+            "Comma-separated scenario ids to run as an explicit subset of "
+            "--partition (bounded pilots). Fails closed (exit 2, nothing "
+            "executed) on blank, duplicate, unknown, or wrong-partition ids; "
+            "output records the exact resolved ids."
+        ),
+    )
+    parser.add_argument(
         "--local-model",
         default=None,
         metavar="TAG",
@@ -1332,6 +1427,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    select_ids: list[str] | None = None
+    if args.select is not None:
+        # Split verbatim; blank entries are preserved so the fail-closed
+        # validator in select_cases rejects them (empty string -> [""]).
+        select_ids = args.select.split(",")
+
     local_model = None
     if args.local_model:
         local_model = {
@@ -1345,7 +1446,19 @@ def main(argv: list[str] | None = None) -> int:
             local_model["digest"] = args.local_model_digest
 
     if args.command == "manifest":
-        manifest = build_manifest(local_model=local_model)
+        try:
+            # Validate ids against the selected partition so the manifest can
+            # never record a selection a run would refuse (fail closed).
+            if select_ids is not None:
+                select_cases(args.partition, select_ids=select_ids)
+        except ValueError as exc:
+            print(f"agent44-eval: {exc}", file=sys.stderr)
+            return 2
+        manifest = build_manifest(
+            local_model=local_model,
+            select_ids=select_ids,
+            select_partition=args.partition if select_ids is not None else None,
+        )
         out_path = Path(args.output)
         out_path.write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -1366,14 +1479,15 @@ def main(argv: list[str] | None = None) -> int:
                 adapter_replay=args.adapter_replay,
                 local_model=local_model,
                 partition=args.partition,
+                select_ids=select_ids,
                 trials=args.trials,
                 bootstrap_seed=args.seed,
             )
         )
     except ValueError as exc:
         # Fail-closed configuration errors (invalid partition, local-model
-        # partition restriction, call budget exceeded, bad policy file;
-        # PolicyError subclasses ValueError). Nothing was executed.
+        # partition restriction, bad --select ids, call budget exceeded, bad
+        # policy file; PolicyError subclasses ValueError). Nothing executed.
         print(f"agent44-eval: {exc}", file=sys.stderr)
         return 2
     out_path = Path(args.output)
