@@ -30,6 +30,7 @@ dotted field path or a "field is present" check.
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 from enum import StrEnum
 from pathlib import Path
@@ -261,7 +262,52 @@ def load_policy(path: str | Path) -> Policy:
 
 
 ADAPTER_TIMEOUT_SECONDS = 5.0
-"""Maximum time the engine waits for one adapter call before failing closed."""
+"""Maximum time the engine waits for one adapter call before failing closed.
+
+The default is also the effective value for every engine construction path
+that does not pass ``adapter_timeout_seconds`` explicitly. The module
+constant is documentation of the default combined with a validation hook;
+engines carry their effective deadline as an instance attribute and are
+never configured through a mutable global.
+
+Configuration rule: the effective deadline must be strictly positive and
+must not exceed the outer timeouts (the provider request timeout at
+``agent44.local_provider.DEFAULT_TIMEOUT_SECONDS`` and the downstream call
+timeout at ``agent44.proxy.DOWNSTREAM_CALL_TIMEOUT_SECONDS``, both 60 s).
+A deadline beyond that bound would be indistinguishable, at classification
+time, from a provider/transport timeout and would mask the engine's own
+``adapter_timeout`` classification.
+"""
+
+
+# Outer harness / provider bound. A deadline beyond this value would fire at,
+# or be masked by, the outer timeouts, so timeouts could no longer be
+# classified as the engine's own ``adapter_timeout``.
+_MAX_ADAPTER_TIMEOUT_SECONDS = 60.0
+
+
+def _validate_adapter_timeout(seconds: float) -> float:
+    """Validate and normalise an adapter deadline.
+
+    Rejected: non-finite values, zero, negative values, and values greater
+    than the outer bound (provider and downstream call timeout), which would
+    make engine timeouts indistinguishable from provider/transport timeouts.
+
+    Returns the value as a float when valid.
+    """
+    if not math.isfinite(seconds):
+        raise ValueError("adapter timeout must be a finite number")
+    if seconds <= 0:
+        raise ValueError("adapter timeout must be strictly positive")
+    if seconds > _MAX_ADAPTER_TIMEOUT_SECONDS:
+        raise ValueError(
+            f"adapter timeout {seconds}s exceeds the outer bound of "
+            f"{_MAX_ADAPTER_TIMEOUT_SECONDS}s (provider and downstream call "
+            f"timeout of 60 s); a larger deadline would mask the engine's "
+            f"'adapter_timeout' classification with a provider/transport "
+            f"timeout"
+        )
+    return float(seconds)
 
 
 class AdapterParseError(ValueError):
@@ -349,13 +395,20 @@ class RulesOnlyAdapter(DecisionAdapter):
 class PolicyEngine:
     """Deterministic evaluator over a validated ``Policy``."""
 
-    def __init__(self, policy: Policy) -> None:
+    def __init__(self, policy: Policy, *, adapter_timeout_seconds: float = 5.0) -> None:
         self.policy = policy
+        self.adapter_timeout_seconds = _validate_adapter_timeout(adapter_timeout_seconds)
 
     @classmethod
-    def from_path(cls, path: str | Path) -> PolicyEngine:
-        """Load a policy file and return an engine, or raise ``PolicyError``."""
-        return cls(load_policy(path))
+    def from_path(
+        cls, path: str | Path, *, adapter_timeout_seconds: float = 5.0
+    ) -> PolicyEngine:
+        """Load a policy file and return an engine, or raise ``PolicyError``.
+
+        ``adapter_timeout_seconds`` overrides the module-level default
+        (``ADAPTER_TIMEOUT_SECONDS``) for this engine only.
+        """
+        return cls(load_policy(path), adapter_timeout_seconds=adapter_timeout_seconds)
 
     @property
     def policy_id(self) -> str:
@@ -545,7 +598,7 @@ class PolicyEngine:
             try:
                 raw = await asyncio.wait_for(
                     adapter.decide(tool_name, args, self._adapter_rules()),
-                    timeout=ADAPTER_TIMEOUT_SECONDS,
+                    timeout=self.adapter_timeout_seconds,
                 )
             except TimeoutError:
                 return self._adapter_failure(tool_name, "timed out", "adapter_timeout", policy)

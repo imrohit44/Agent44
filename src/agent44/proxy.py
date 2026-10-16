@@ -45,6 +45,7 @@ from agent44.policy import (
     PolicyEngine,
     PolicyError,
     RulesOnlyAdapter,
+    _validate_adapter_timeout,
 )
 
 logger = logging.getLogger("agent44.proxy")
@@ -276,6 +277,18 @@ def parse_downstream_args(
         ),
     )
     parser.add_argument(
+        "--adapter-deadline",
+        metavar="SECONDS",
+        type=float,
+        default=5.0,
+        help=(
+            "Per-adapter-call deadline for the policy engine (default: 5.0, "
+            "the module default ADAPTER_TIMEOUT_SECONDS). Must be finite and "
+            "strictly positive and cannot exceed the provider and downstream "
+            "call timeouts (60 s); see agent44.policy for validation rules."
+        ),
+    )
+    parser.add_argument(
         "--local-model",
         metavar="TAG",
         default=None,
@@ -321,6 +334,12 @@ def parse_downstream_args(
     )
     args = parser.parse_args(argv)
 
+    # Reject invalid deadlines before any subprocess or provider activity.
+    try:
+        _validate_adapter_timeout(args.adapter_deadline)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     downstream = args.command
     # argparse.REMAINDER keeps a leading '--' when present; drop it.
     if downstream and downstream[0] == "--":
@@ -331,7 +350,9 @@ def parse_downstream_args(
     params = StdioServerParameters(command=downstream[0], args=downstream[1:])
     observer = JsonlObserver(args.observe) if args.observe else None
     # Raises PolicyError when --policy is given but the file is unusable.
-    policy = PolicyEngine.from_path(args.policy) if args.policy else None
+    policy = PolicyEngine.from_path(
+        args.policy, adapter_timeout_seconds=args.adapter_deadline
+    ) if args.policy else None
     adapter: DecisionAdapter
     if args.local_model:
         try:

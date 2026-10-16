@@ -45,6 +45,7 @@ from agent44 import corpus
 from agent44 import policy as policy_module
 from agent44.corpus import CorpusCase
 from agent44.observe import JsonlObserver
+from agent44.policy import _validate_adapter_timeout
 
 PROXY_MODULE = ["-m", "agent44.proxy"]
 DEMO_MODULE = ["-m", "agent44.demo_server"]
@@ -962,6 +963,7 @@ async def evaluate(
     timeout_seconds: float = 30.0,
     trials: int = 1,
     bootstrap_seed: int = 0,
+    adapter_deadline: float = 5.0,
 ) -> dict[str, Any]:
     """Run the corpus through the enforcing proxy and return the report.
 
@@ -990,6 +992,12 @@ async def evaluate(
     run fails closed through :func:`select_cases` before any subprocess,
     proxy, or model call; the resolved ids are recorded in the report under
     ``partition_selection.explicit_selection``.
+
+    ``adapter_deadline`` is the maximum seconds the policy engine waits for an
+    adapter-tier decision before failing closed to ``DENY`` (default: 5.0 s).
+    It is validated before any engine, proxy, or subprocess activity and is
+    recorded in ``run_bounds["adapter_decision_timeout_seconds"]`` and the
+    reproducibility manifest.
     """
     if trials < 1:
         raise ValueError("trials must be >= 1")
@@ -1005,6 +1013,11 @@ async def evaluate(
             f"partition={partition!r} so held-out scenarios (or the full corpus) "
             "can never influence model/prompt tuning. No model was contacted."
         )
+
+    # Validate the adapter deadline before any engine/proxy/subprocess activity
+    # so an invalid deadline fails closed before anything is executed.
+    _validate_adapter_timeout(adapter_deadline)
+
     policy = str(policy_path) if policy_path is not None else str(EVAL_POLICY)
     cases = select_cases(partition, select_ids=select_ids)  # stable order; no shuffling
     partition_of = corpus.partition_map()
@@ -1014,7 +1027,9 @@ async def evaluate(
         # Load and validate the policy before any subprocess or model call so
         # a bad policy path fails closed instead of crashing mid-run, then
         # freeze the call budget for this selection and trial count.
-        engine = policy_module.PolicyEngine.from_path(policy)
+        engine = policy_module.PolicyEngine.from_path(
+            policy, adapter_timeout_seconds=adapter_deadline
+        )
         call_budget = plan_local_model_calls(
             cases=cases,
             trials=trials,
@@ -1039,6 +1054,10 @@ async def evaluate(
             proxy_args += ["--local-model-port", str(lm.get("port", 11434))]
             proxy_args += ["--local-model-timeout", str(lm.get("timeout_seconds", 60.0))]
             proxy_args += ["--local-model-max-calls", str(lm.get("max_calls", 256))]
+        # Propagate the validated adapter deadline to the proxy's enforcement engine
+        # so adapter-tier calls are bounded by the same deadline in the subprocess.
+        proxy_args += ["--adapter-deadline", str(adapter_deadline)]
+
         proxy_args += ["--", sys.executable, *DEMO_MODULE]
         params = StdioServerParameters(command=sys.executable, args=proxy_args)
         observer = JsonlObserver(run_observe)
@@ -1079,7 +1098,7 @@ async def evaluate(
     provenance = inference_provenance(adapter_replay=adapter_replay, local_model=local_model)
     run_bounds: dict[str, Any] = {
         "harness_per_case_timeout_seconds": float(timeout_seconds),
-        "adapter_decision_timeout_seconds": float(policy_module.ADAPTER_TIMEOUT_SECONDS),
+        "adapter_decision_timeout_seconds": float(adapter_deadline),
         "trials": int(trials),
         "selected_scenarios": len(cases),
         "worst_case_harness_seconds": round(len(cases) * trials * float(timeout_seconds), 3),
@@ -1187,6 +1206,7 @@ def build_manifest(
     local_model: dict[str, Any] | None = None,
     select_ids: list[str] | None = None,
     select_partition: str | None = None,
+    adapter_deadline_seconds: float = 5.0,
 ) -> dict[str, Any]:
     """Build a reproducible experiment manifest for a freeze.
 
@@ -1203,6 +1223,9 @@ def build_manifest(
     Contains no credentials or sensitive values: it hashes files, it never
     reads or embeds secrets.
     """
+    # Record (and validate) the adapter deadline so manifests are fail-closed.
+    _validate_adapter_timeout(adapter_deadline_seconds)
+
     evaluation_dir = Path(__file__).resolve().parent.parent.parent / "evaluation"
     src_dir = Path(__file__).resolve().parent
     policy = Path(policy_path) if policy_path is not None else EVAL_POLICY
@@ -1225,6 +1248,7 @@ def build_manifest(
     return {
         "protocol": "PROTOCOL_v1.1_AMENDMENT",
         "generated_by": "agent44.eval_runner manifest",
+        "adapter_deadline_seconds": float(adapter_deadline_seconds),
         "git_commit": _git_commit(),
         "corpus_version": corpus.CORPUS_VERSION,
         "artifacts": {
@@ -1425,6 +1449,15 @@ def main(argv: list[str] | None = None) -> int:
             "record in the report/manifest for a fully pinned freeze."
         ),
     )
+    parser.add_argument(
+        "--adapter-deadline",
+        type=float,
+        default=5.0,
+        help=(
+            "Maximum seconds the policy engine waits for an adapter decision "
+            "before failing closed to DENY (default: 5.0)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     select_ids: list[str] | None = None
@@ -1458,6 +1491,7 @@ def main(argv: list[str] | None = None) -> int:
             local_model=local_model,
             select_ids=select_ids,
             select_partition=args.partition if select_ids is not None else None,
+            adapter_deadline_seconds=args.adapter_deadline,
         )
         out_path = Path(args.output)
         out_path.write_text(
@@ -1482,6 +1516,7 @@ def main(argv: list[str] | None = None) -> int:
                 select_ids=select_ids,
                 trials=args.trials,
                 bootstrap_seed=args.seed,
+                adapter_deadline=args.adapter_deadline,
             )
         )
     except ValueError as exc:
