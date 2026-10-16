@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from agent44 import corpus
+from agent44 import corpus, eval_runner
 from agent44.eval_runner import (
     _percentiles,
     _run_case,
@@ -26,6 +26,7 @@ from agent44.eval_runner import (
     select_cases,
     summarize,
 )
+from agent44.readiness import ReadinessError
 
 
 def _rec(
@@ -542,3 +543,128 @@ def test_main_run_with_select_writes_exact_subset(tmp_path: Path) -> None:
     assert sel["count"] == 2
     assert report["partition_selection"]["held_out_scenarios_included"] == 0
     assert report["inference"]["source"] == "rules-only"
+
+
+# --- 4f.6 readiness wiring ----------------------------------------------------
+
+
+def test_evaluate_local_model_readiness_aborts_before_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A readiness failure must abort BEFORE the proxy/subprocess spawns and
+    # before the observer file is touched: nothing is executed.
+    calls: list[dict] = []
+
+    async def failing_readiness(local_model, *, provider=None):
+        calls.append(dict(local_model))
+        raise ReadinessError("readiness failed (test)")
+
+    monkeypatch.setattr(eval_runner.readiness_module, "ensure_model_ready", failing_readiness)
+    observe = tmp_path / "never.jsonl"
+    with pytest.raises(ReadinessError, match="readiness failed"):
+        asyncio.run(
+            evaluate(
+                observe_path=str(observe),
+                local_model={"model": "llama3.2:1b", "digest": "d" * 64},
+                partition=corpus.PARTITION_DEVELOPMENT,
+                select_ids=["benign-add-basic-02"],
+            )
+        )
+    assert not observe.exists()
+    # The declared configuration (including the digest) reached readiness.
+    assert calls == [{"model": "llama3.2:1b", "digest": "d" * 64}]
+
+
+def test_evaluate_local_model_readiness_recorded_separately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Happy-path wiring with an injected readiness record. The single
+    # selected scenario is deterministic-tier (never consults the adapter),
+    # so this run issues ZERO live generation requests regardless of whether
+    # a model happens to be running on the loopback host.
+    record = {
+        "status": "ready",
+        "model": "llama3.2:1b",
+        "priming": None,
+        "generation_requests_issued": 0,
+    }
+
+    async def ready_readiness(local_model, *, provider=None):
+        return dict(record)
+
+    monkeypatch.setattr(eval_runner.readiness_module, "ensure_model_ready", ready_readiness)
+    report = asyncio.run(
+        evaluate(
+            local_model={"model": "llama3.2:1b", "digest": "d" * 64},
+            partition=corpus.PARTITION_DEVELOPMENT,
+            select_ids=["benign-add-basic-02"],
+        )
+    )
+    assert report["readiness"] == record
+    # Priming/readiness fields never leak into scenario results or metrics.
+    assert report["results"]
+    assert all("priming" not in r and "readiness" not in r for r in report["results"])
+    # The adapter deadline default is unchanged by the readiness wiring.
+    assert report["run_bounds"]["adapter_decision_timeout_seconds"] == 5.0
+
+
+def test_rules_only_run_has_null_readiness() -> None:
+    report = asyncio.run(
+        evaluate(partition=corpus.PARTITION_DEVELOPMENT, select_ids=["benign-add-basic-02"])
+    )
+    assert report["readiness"] is None
+
+
+@pytest.mark.parametrize(
+    "flag_value",
+    [("--local-model-keep-alive", "-1"), ("--local-model-keep-alive", "nan"),
+     ("--local-model-prime-timeout", "0"), ("--local-model-prime-timeout", "500")],
+)
+def test_main_rejects_unsafe_local_model_readiness_config(
+    flag_value: tuple[str, str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "never.json"
+    flag, value = flag_value
+    code = main(
+        [
+            "run",
+            "--partition",
+            "development",
+            "--local-model",
+            "llama3.2:1b",
+            flag,
+            value,
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == 2
+    assert not out.exists()
+    err = capsys.readouterr().err
+    assert "keep-alive" in err or "prime timeout" in err
+
+
+def test_main_manifest_records_readiness_config(tmp_path: Path) -> None:
+    out = tmp_path / "manifest.json"
+    code = main(
+        [
+            "manifest",
+            "--local-model",
+            "llama3.2:1b",
+            "--local-model-digest",
+            "abc123",
+            "--local-model-keep-alive",
+            "777",
+            "--local-model-prime-timeout",
+            "20",
+            "-o",
+            str(out),
+        ]
+    )
+    assert code == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    lm = data["local_model"]
+    assert lm["digest"] == "abc123"
+    assert lm["keep_alive_seconds"] == 777.0
+    assert lm["prime_timeout_seconds"] == 20.0
+    assert lm["model"] == "llama3.2:1b"

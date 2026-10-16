@@ -15,6 +15,10 @@ Safety properties enforced here:
   deterministic rules-only / replay / fake paths are unchanged.
 - **Bounded.** Requests carry an explicit timeout; responses are streamed and
   capped in size; prompts are the already-bounded prompt from the adapter.
+  The readiness helpers are read-only (``/api/tags``, ``/api/ps``) except for
+  ``prime()``, a single explicitly budgeted priming request that is hard-
+  capped at one per provider instance and carries its own keep-alive and
+  client timeout; priming is never part of the adapter-call budget.
 - **Fail closed.** Any provider error (connection refused, timeout, oversized
   response, redirect, remote host) raises :class:`LocalProviderError`, which
   the engine maps to a fail-closed ``DENY`` (``adapter_error``). Malformed
@@ -33,7 +37,9 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import socket
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -205,6 +211,7 @@ class OllamaProvider:
         self._timeout = float(timeout)
         self._max_calls = int(max_calls)
         self._calls = 0
+        self._primes = 0
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(self._timeout),
             follow_redirects=False,
@@ -218,6 +225,11 @@ class OllamaProvider:
     @property
     def calls_made(self) -> int:
         return self._calls
+
+    @property
+    def primes_made(self) -> int:
+        """Number of priming requests issued (at most 1 per instance)."""
+        return self._primes
 
     def describe(self) -> dict[str, Any]:
         """Return secret-free provider config for the experiment manifest."""
@@ -345,6 +357,127 @@ class OllamaProvider:
         raise LocalProviderError(
             f"model {self._model!r} is not installed locally; pull it manually before running"
         )
+
+    async def resident_models(self) -> list[str]:
+        """Return the names of models currently resident, via ``GET /api/ps``.
+
+        Read-only: it never loads, unloads, or downloads a model. Raises
+        :class:`LocalProviderError` on transport, status, redirect, size-cap,
+        or shape failures so callers fail closed instead of guessing
+        residency. Used by the readiness procedure
+        (:mod:`agent44.readiness`) to record residency before and after
+        priming.
+        """
+        request = self._client.build_request("GET", f"{self._base_url}/api/ps")
+        try:
+            response = await self._client.send(request, stream=True)
+            try:
+                body = await self._read_capped(response)
+            finally:
+                await response.aclose()
+        except LocalProviderError:
+            raise
+        except httpx.HTTPError as exc:
+            raise LocalProviderError(f"local model residency request failed: {exc}") from exc
+        except OSError as exc:
+            raise LocalProviderError(f"local model residency transport failure: {exc}") from exc
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except ValueError as exc:
+            raise LocalProviderError(f"local model residency response is not JSON: {exc}") from exc
+        if not isinstance(data, Mapping) or not isinstance(data.get("models"), list):
+            raise LocalProviderError("unexpected /api/ps shape from local model host")
+        names: list[str] = []
+        for entry in data["models"]:
+            if isinstance(entry, Mapping):
+                name = entry.get("name")
+                if not isinstance(name, str):
+                    name = entry.get("model")
+                if isinstance(name, str):
+                    names.append(name)
+        return names
+
+    async def prime(
+        self,
+        *,
+        prompt: str,
+        keep_alive_seconds: float,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        """Issue at most ONE explicitly budgeted priming generation request.
+
+        Used by the readiness procedure (:mod:`agent44.readiness`) to warm a
+        non-resident model before evaluation so cold-start model loading is
+        never mistaken for decision quality. The request carries an explicit
+        ``keep_alive`` (seconds) so residency can outlive the request, and its
+        own client ``timeout_seconds`` so a slow load can never hang the
+        caller. This is NOT an adapter decision call: the hard adapter-call
+        counter (``max_calls`` / ``calls_made``) is untouched, the priming
+        outcome is counted and recorded by the readiness procedure instead,
+        and a second priming request on the same provider instance is
+        refused. Never retried and never concurrent by construction (the
+        readiness procedure is sequential). Raises
+        :class:`LocalProviderError` on any failure, including a timeout
+        (message contains "timed out") and malformed response content
+        (:class:`LocalProviderResponseError`).
+        """
+        if self._primes >= 1:
+            raise LocalProviderError(
+                "priming already performed on this provider instance; refusing a "
+                "second priming request (one priming request maximum)"
+            )
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise LocalProviderError("priming prompt must be a non-empty string")
+        if isinstance(keep_alive_seconds, bool) or not isinstance(
+            keep_alive_seconds, (int, float)
+        ):
+            raise LocalProviderError("priming keep_alive must be a number of seconds")
+        if not math.isfinite(float(keep_alive_seconds)) or keep_alive_seconds < 0:
+            raise LocalProviderError(
+                "priming keep_alive must be a finite non-negative number of seconds"
+            )
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
+            raise LocalProviderError("priming timeout must be a number of seconds")
+        if not math.isfinite(float(timeout_seconds)) or timeout_seconds <= 0:
+            raise LocalProviderError("priming timeout must be a finite positive number of seconds")
+        self._primes += 1
+        started = time.monotonic()
+        request = self._post(
+            "/api/generate",
+            {
+                "model": self._model,
+                "prompt": prompt,
+                "stream": True,
+                "keep_alive": float(keep_alive_seconds),
+                "options": {"temperature": 0},
+            },
+        )
+        # Per-request timeout: priming has its own declared bound, separate
+        # from the provider's general request timeout.
+        request.extensions["timeout"] = httpx.Timeout(float(timeout_seconds))
+        try:
+            response = await self._client.send(request, stream=True)
+            try:
+                body = await self._read_capped(response)
+            finally:
+                await response.aclose()
+        except LocalProviderError:
+            raise
+        except httpx.TimeoutException as exc:
+            raise LocalProviderError(
+                f"priming request timed out after {timeout_seconds}s: {type(exc).__name__}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise LocalProviderError(f"priming request failed: {exc}") from exc
+        except OSError as exc:
+            raise LocalProviderError(f"priming request transport failure: {exc}") from exc
+        text = _extract_text(body)
+        return {
+            "completed": True,
+            "elapsed_seconds": round(time.monotonic() - started, 4),
+            "response_chars": len(text),
+            "response_valid": bool(text.strip()),
+        }
 
     async def aclose(self) -> None:
         """Close the underlying HTTP client."""

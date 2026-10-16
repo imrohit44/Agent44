@@ -17,8 +17,11 @@ Pilot safeguards: scenario selection honors the pre-registered development/
 held-out partition split (local-model runs are refused unless they select
 the development partition explicitly); an explicit ``--select`` id list
 further bounds a run to a pre-declared scenario subset and is validated
-fail-closed against the selected partition; the report records the decision
-source (rules-only, fixture-replay, or live local model), run bounds, and
+fail-closed against the selected partition; local-model runs execute a
+transparent, bounded readiness/priming procedure (``agent44.readiness``)
+before any scenario so cold-start model loading is never mistaken for
+decision quality; the report records the decision source (rules-only,
+fixture-replay, or live local model), the readiness record, run bounds, and
 the local-model call budget so a strictly-local pilot stays bounded and
 reproducible.
 """
@@ -43,9 +46,16 @@ from mcp.client.stdio import stdio_client
 
 from agent44 import corpus
 from agent44 import policy as policy_module
+from agent44 import readiness as readiness_module
 from agent44.corpus import CorpusCase
 from agent44.observe import JsonlObserver
 from agent44.policy import _validate_adapter_timeout
+from agent44.readiness import (
+    DEFAULT_KEEP_ALIVE_SECONDS,
+    DEFAULT_PRIME_TIMEOUT_SECONDS,
+    _validate_keep_alive,
+    _validate_prime_timeout,
+)
 
 PROXY_MODULE = ["-m", "agent44.proxy"]
 DEMO_MODULE = ["-m", "agent44.demo_server"]
@@ -993,6 +1003,16 @@ async def evaluate(
     proxy, or model call; the resolved ids are recorded in the report under
     ``partition_selection.explicit_selection``.
 
+    When ``local_model`` is set, a transparent readiness procedure runs after
+    all fail-closed configuration checks and immediately before the proxy
+    starts (see :mod:`agent44.readiness`): reachability, installed-digest
+    confirmation (``local_model["digest"]`` is required), residency via
+    ``/api/ps``, at most one explicitly budgeted priming request with the
+    declared keep-alive, then a residency re-check. Any readiness failure
+    raises :class:`~agent44.readiness.ReadinessError` (a ``ValueError``)
+    before any scenario executes; the record is stored under
+    ``report["readiness"]`` and is never mixed into scenario results.
+
     ``adapter_deadline`` is the maximum seconds the policy engine waits for an
     adapter-tier decision before failing closed to ``DENY`` (default: 5.0 s).
     It is validated before any engine, proxy, or subprocess activity and is
@@ -1023,6 +1043,7 @@ async def evaluate(
     partition_of = corpus.partition_map()
 
     call_budget: dict[str, Any] | None = None
+    readiness_record: dict[str, Any] | None = None
     if local_model:
         # Load and validate the policy before any subprocess or model call so
         # a bad policy path fails closed instead of crashing mid-run, then
@@ -1036,6 +1057,15 @@ async def evaluate(
             adapter_tools=engine.policy.adapter_tools,
             max_calls=int(local_model.get("max_calls", 256)),
         )
+        # Readiness runs after every fail-closed configuration check and
+        # immediately before the proxy spawns (see agent44.readiness):
+        # reachability, installed-digest confirmation, /api/ps residency, at
+        # most ONE explicitly budgeted priming request with the declared
+        # keep-alive, then a residency re-check. Any failure raises
+        # ReadinessError (a ValueError -> exit 2) BEFORE any scenario runs;
+        # the record is stored under report["readiness"] and is never mixed
+        # into scenario results or metrics.
+        readiness_record = await readiness_module.ensure_model_ready(local_model)
 
     # The proxy's JSONL observation log is the authoritative per-call decision
     # source. The runner ALWAYS runs the proxy with its own observation file so
@@ -1148,6 +1178,7 @@ async def evaluate(
         },
         "run_bounds": run_bounds,
         "model_call_budget": call_budget,
+        "readiness": readiness_record,
         "determinism_note": (
             "Rules-only and replay modes are deterministic; every trial of a "
             "scenario yields an identical decision. trials is reported so a "
@@ -1445,8 +1476,30 @@ def main(argv: list[str] | None = None) -> int:
         "--local-model-digest",
         default=None,
         help=(
-            "Optional model digest (e.g. from 'ollama show --json <TAG>') to "
-            "record in the report/manifest for a fully pinned freeze."
+            "Expected model digest (e.g. from 'ollama show --json <TAG>'). "
+            "Recorded in the report/manifest AND required for live runs: the "
+            "readiness procedure fails closed without it so the exact "
+            "installed model can be confirmed (the evaluator never pulls)."
+        ),
+    )
+    parser.add_argument(
+        "--local-model-keep-alive",
+        type=float,
+        default=DEFAULT_KEEP_ALIVE_SECONDS,
+        help=(
+            "Keep-alive (seconds) requested during the readiness priming step "
+            f"so the model stays resident across the run (default: "
+            f"{DEFAULT_KEEP_ALIVE_SECONDS:g}; maximum: 3600). Must be strictly "
+            "positive; negative values (e.g. -1, pin forever) are refused."
+        ),
+    )
+    parser.add_argument(
+        "--local-model-prime-timeout",
+        type=float,
+        default=DEFAULT_PRIME_TIMEOUT_SECONDS,
+        help=(
+            "Bounded client timeout (seconds) for the single readiness priming "
+            f"request (default: {DEFAULT_PRIME_TIMEOUT_SECONDS:g}; maximum: 120)."
         ),
     )
     parser.add_argument(
@@ -1468,12 +1521,23 @@ def main(argv: list[str] | None = None) -> int:
 
     local_model = None
     if args.local_model:
+        # Validate the readiness configuration fail-closed before any
+        # dispatch, so unsafe keep-alive / priming-timeout values exit 2
+        # with nothing executed and no model contacted.
+        try:
+            keep_alive = _validate_keep_alive(args.local_model_keep_alive)
+            prime_timeout = _validate_prime_timeout(args.local_model_prime_timeout)
+        except ValueError as exc:
+            print(f"agent44-eval: {exc}", file=sys.stderr)
+            return 2
         local_model = {
             "model": args.local_model,
             "host": args.local_model_host,
             "port": args.local_model_port,
             "timeout_seconds": args.local_model_timeout,
             "max_calls": args.local_model_max_calls,
+            "keep_alive_seconds": keep_alive,
+            "prime_timeout_seconds": prime_timeout,
         }
         if args.local_model_digest:
             local_model["digest"] = args.local_model_digest
