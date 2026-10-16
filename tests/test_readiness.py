@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 import httpx
@@ -35,6 +36,36 @@ DIGEST = "baf6a787fdffd633537aa2eb51cfd54cb93ff08e28040095462bb63daf552878"
 
 # A valid streamed Ollama body for the priming prompt.
 STREAMED_OK = b'{"response":"OK", "done": false}\n{"done": true}\n'
+
+
+class TricklingStream(httpx.AsyncByteStream):
+    """A streamed Ollama body that keeps yielding valid chunks slowly.
+
+    Every inter-chunk gap stays below the per-phase HTTP read timeout, so no
+    phase-level timeout can ever fire; only a total wall-clock deadline can
+    stop the stream before it finishes. Records how many chunks were yielded
+    (did the total deadline cut the stream short?) and whether the response
+    was closed (cleanup attempted on the failure path).
+    """
+
+    def __init__(self, *, chunks: int, gap: float) -> None:
+        self._chunks = chunks
+        self._gap = gap
+        self.yielded = 0
+        self.closed = False
+
+    async def __aiter__(self):
+        for i in range(self._chunks):
+            if i:
+                await asyncio.sleep(self._gap)
+            self.yielded += 1
+            if i == self._chunks - 1:
+                yield b'{"done": true}\n'
+            else:
+                yield b'{"response":"warming", "done": false}\n'
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 def run(coro):
@@ -282,6 +313,29 @@ def test_prime_rejects_invalid_inputs_before_any_request() -> None:
     assert provider.primes_made == 0
 
 
+def test_prime_total_deadline_bounds_slow_stream() -> None:
+    # The stream yields a valid chunk every 0.05 s — always within the 0.2 s
+    # per-phase HTTP timeout — so no phase timeout can fire; the full stream
+    # would take ~2 s. Only the total deadline can stop it, and the injected
+    # 0.2 s deadline keeps the test fast (never waits the production 30 s).
+    stream = TricklingStream(chunks=40, gap=0.05)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream)
+
+    provider = provider_with(handler)
+    started = time.monotonic()
+    with pytest.raises(LocalProviderError, match="timed out"):
+        run(provider.prime(prompt="OK.", keep_alive_seconds=60.0, timeout_seconds=0.2))
+    elapsed = time.monotonic() - started
+    # Aborted at the total deadline (~0.2 s) — never returned success.
+    assert elapsed < 1.0
+    assert stream.yielded < 40  # deadline cut the stream short mid-body
+    assert stream.closed  # response cleanup still ran on the failure path
+    assert provider.primes_made == 1  # one attempt, never retried
+    assert provider.calls_made == 0  # adapter-call budget untouched
+
+
 # --- ensure_model_ready: procedure paths ------------------------------------
 
 
@@ -383,6 +437,32 @@ def test_ready_priming_timeout_aborts_without_retry() -> None:
     assert priming["timed_out"] is True
     assert priming["completed"] is False
     assert priming["response_valid"] is False
+    assert priming["elapsed_seconds"] >= 0.0
+
+
+def test_ready_priming_total_deadline_aborts_without_retry() -> None:
+    # A trickling streamed response keeps every inter-chunk gap within the
+    # per-phase timeout, so only the TOTAL deadline can fail the prime. The
+    # failure must be recorded as a timed-out priming operation and abort
+    # readiness (status "aborted") with no retry and no post-prime re-check.
+    stream = TricklingStream(chunks=40, gap=0.05)
+
+    def generate(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream)
+
+    handler, state = make_handler(resident_flags=(False,), generate_response=generate)
+    exc = ensure_ready_raises(handler, prime_timeout_seconds=0.2)
+    assert "priming request failed" in str(exc)
+    assert "timed out" in str(exc)
+    assert state["generate_calls"] == 1  # attempted once, never retried
+    assert state["ps_calls"] == 1  # no post-priming re-check after failure
+    assert stream.yielded < 40  # total deadline fired mid-stream
+    assert exc.record["status"] == "aborted"
+    priming = exc.record["priming"]
+    assert priming["timed_out"] is True
+    assert priming["completed"] is False
+    assert priming["response_valid"] is False
+    assert "total deadline" in priming["error"]
     assert priming["elapsed_seconds"] >= 0.0
 
 

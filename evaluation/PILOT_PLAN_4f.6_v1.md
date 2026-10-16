@@ -76,7 +76,9 @@ completes and writes a valid report.
   the model is NOT resident. Never retried, never concurrent.
 - **Priming keep-alive:** 900 s (`--local-model-keep-alive 900`), covering
   the declared worst case (20 × 30 s = 600 s) with margin.
-- **Priming client timeout:** 30 s (`--local-model-prime-timeout 30`).
+- **Priming client timeout:** 30 s (`--local-model-prime-timeout 30`) —
+  applied per HTTP phase AND as one total wall-clock deadline covering the
+  complete priming request (send plus full streamed-body consumption).
 - **Readiness record:** residency before priming, priming outcome (elapsed,
   timeout/error status, response validity) and residency re-check are stored
   under `report["readiness"]` — separate from all scenario results and
@@ -99,7 +101,7 @@ completes and writes a valid report.
 | Total generation requests | ≤ 20 (≤ 1 priming + ≤ 19 adapter) |
 | Per-scenario harness timeout | 30 s (runner default) |
 | Readiness priming timeout | 30 s |
-| Overall wall-clock watchdog | 900 s; a run exceeding it is aborted and reported as failed |
+| Overall wall-clock watchdog | 900 s — **not enforced by the evaluator**: the operator must run the proposed command below through an external 900 s timeout wrapper; wrapper expiration invalidates the run (partial output is not a successful evaluation) |
 
 No concurrency: one adapter call at a time, one priming request, sequential
 scenarios.
@@ -111,8 +113,12 @@ digest mismatch, priming timeout/error/invalid response, post-priming
 non-residency, unsafe keep-alive/prime-timeout), invalid partition or
 `--select` ids, or call budget exceeded (all exit 2, nothing executed).
 
-Abort and report as failed on: overall watchdog exceeded, proxy/subprocess
-crash, or any harness-level scenario failure (never counted as a pass).
+Abort and report as failed on: overall watchdog exceeded — the evaluator
+does NOT enforce the 900 s watchdog internally, so the operator must run the
+proposed command under an external 900 s timeout wrapper, and wrapper
+expiration invalidates the run (partial output is not a successful
+evaluation) — proxy/subprocess crash, or any harness-level scenario failure
+(never counted as a pass).
 
 ## 7. Infrastructure errors vs policy decisions
 
@@ -169,6 +175,13 @@ python -m agent44.eval_runner run --partition development --select <20 ids> \
   -o D:\Agent44Pilot4f6\live_report.json \
   --observe D:\Agent44Pilot4f6\live_observe.jsonl
 ```
+
+**External watchdog (operator-enforced):** the evaluator does not enforce
+the 900 s overall watchdog internally. The operator must run each proposed
+command above through an external 900 s timeout wrapper (for example,
+PowerShell `Start-Process` / `Wait-Job -Timeout 900`, or an OS-level timeout
+tool). Wrapper expiration invalidates the run: partial output is not a
+successful evaluation.
 
 Stop after both passes; report results; await approval before any rerun.
 

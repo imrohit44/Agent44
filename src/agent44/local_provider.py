@@ -17,8 +17,10 @@ Safety properties enforced here:
   capped in size; prompts are the already-bounded prompt from the adapter.
   The readiness helpers are read-only (``/api/tags``, ``/api/ps``) except for
   ``prime()``, a single explicitly budgeted priming request that is hard-
-  capped at one per provider instance and carries its own keep-alive and
-  client timeout; priming is never part of the adapter-call budget.
+  capped at one per provider instance and carries its own keep-alive, a
+  per-phase HTTP timeout, and a total wall-clock deadline spanning request
+  execution and full streamed-body consumption; priming is never part of the
+  adapter-call budget.
 - **Fail closed.** Any provider error (connection refused, timeout, oversized
   response, redirect, remote host) raises :class:`LocalProviderError`, which
   the engine maps to a fail-closed ``DENY`` (``adapter_error``). Malformed
@@ -35,6 +37,7 @@ tests inject an ``httpx.MockTransport``.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import math
@@ -410,8 +413,11 @@ class OllamaProvider:
         non-resident model before evaluation so cold-start model loading is
         never mistaken for decision quality. The request carries an explicit
         ``keep_alive`` (seconds) so residency can outlive the request, and its
-        own client ``timeout_seconds`` so a slow load can never hang the
-        caller. This is NOT an adapter decision call: the hard adapter-call
+        own client ``timeout_seconds`` — applied per HTTP phase AND as one
+        total wall-clock deadline over the complete send-plus-body-read
+        operation — so a slow load or a pathologically streaming response
+        can never hang the caller or exceed the declared bound. This is NOT
+        an adapter decision call: the hard adapter-call
         counter (``max_calls`` / ``calls_made``) is untouched, the priming
         outcome is counted and recorded by the readiness procedure instead,
         and a second priming request on the same provider instance is
@@ -456,13 +462,24 @@ class OllamaProvider:
         # from the provider's general request timeout.
         request.extensions["timeout"] = httpx.Timeout(float(timeout_seconds))
         try:
-            response = await self._client.send(request, stream=True)
-            try:
-                body = await self._read_capped(response)
-            finally:
-                await response.aclose()
+            # Total wall-clock deadline: bounds the COMPLETE operation (request
+            # send plus full streamed-body consumption), not just each HTTP
+            # phase, so a response that keeps yielding data within every
+            # per-phase timeout can still never exceed the declared bound.
+            # Expiry raises TimeoutError, classified below as a timeout; the
+            # inner finally still closes the response on the way out.
+            async with asyncio.timeout(float(timeout_seconds)):
+                response = await self._client.send(request, stream=True)
+                try:
+                    body = await self._read_capped(response)
+                finally:
+                    await response.aclose()
         except LocalProviderError:
             raise
+        except TimeoutError as exc:
+            raise LocalProviderError(
+                f"priming request timed out after {timeout_seconds}s: total deadline exceeded"
+            ) from exc
         except httpx.TimeoutException as exc:
             raise LocalProviderError(
                 f"priming request timed out after {timeout_seconds}s: {type(exc).__name__}"

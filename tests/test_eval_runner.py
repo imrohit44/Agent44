@@ -11,6 +11,7 @@ import asyncio
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from agent44 import corpus, eval_runner
@@ -26,6 +27,7 @@ from agent44.eval_runner import (
     select_cases,
     summarize,
 )
+from agent44.local_provider import OllamaProvider
 from agent44.readiness import ReadinessError
 
 
@@ -573,6 +575,73 @@ def test_evaluate_local_model_readiness_aborts_before_execution(
     assert not observe.exists()
     # The declared configuration (including the digest) reached readiness.
     assert calls == [{"model": "llama3.2:1b", "digest": "d" * 64}]
+
+
+def test_evaluate_local_model_total_prime_deadline_aborts_before_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Real readiness + real prime() against a trickling streamed response:
+    # the TOTAL priming deadline expires, readiness records a failed
+    # (timed-out) prime, and evaluate() aborts before the observer exists or
+    # any scenario is executed. The injected 0.2 s deadline keeps the test
+    # fast (never waits the production 30 s bound).
+    digest = "d" * 64
+    state = {"generate_calls": 0}
+
+    async def trickle_body():
+        for i in range(40):
+            if i:
+                await asyncio.sleep(0.05)
+            if i == 39:
+                yield b'{"done": true}\n'
+            else:
+                yield b'{"response":"warming", "done": false}\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "llama3.2:1b", "digest": digest}]})
+        if path == "/api/ps":
+            return httpx.Response(200, json={"models": []})
+        if path == "/api/generate":
+            state["generate_calls"] += 1
+            return httpx.Response(200, content=trickle_body())
+        raise AssertionError(f"unexpected request: {request.method} {path}")
+
+    real_ensure = eval_runner.readiness_module.ensure_model_ready
+
+    async def ensure_with_mock_provider(local_model, *, provider=None):
+        assert provider is None
+        injected = OllamaProvider(
+            local_model["model"], transport=httpx.MockTransport(handler), check_host=False
+        )
+        return await real_ensure(local_model, provider=injected)
+
+    monkeypatch.setattr(
+        eval_runner.readiness_module, "ensure_model_ready", ensure_with_mock_provider
+    )
+    observe = tmp_path / "never.jsonl"
+    with pytest.raises(ReadinessError) as excinfo:
+        asyncio.run(
+            evaluate(
+                observe_path=str(observe),
+                local_model={
+                    "model": "llama3.2:1b",
+                    "digest": digest,
+                    "prime_timeout_seconds": 0.2,
+                },
+                partition=corpus.PARTITION_DEVELOPMENT,
+                select_ids=["benign-add-basic-02"],
+            )
+        )
+    assert "timed out" in str(excinfo.value)
+    record = excinfo.value.record
+    assert record["status"] == "aborted"
+    assert record["priming"]["timed_out"] is True
+    assert record["priming"]["completed"] is False
+    # Nothing executed: no observer output; exactly one (failed) prime attempt.
+    assert not observe.exists()
+    assert state["generate_calls"] == 1
 
 
 def test_evaluate_local_model_readiness_recorded_separately(
