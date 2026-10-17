@@ -459,8 +459,14 @@ class OllamaProvider:
             },
         )
         # Per-request timeout: priming has its own declared bound, separate
-        # from the provider's general request timeout.
-        request.extensions["timeout"] = httpx.Timeout(float(timeout_seconds))
+        # from the provider's general request timeout. The extension MUST use
+        # httpx's own representation — a phase -> seconds dict via
+        # Timeout.as_dict() (as httpx's client builds it in _client.py) —
+        # because httpcore's connection pool reads
+        # extensions.get("timeout", {}).get("pool", None). A bare Timeout
+        # object reaches that line and crashes with AttributeError before any
+        # byte is sent (the Phase 4g.1 run B priming abort; fixed in 4g.1.1).
+        request.extensions["timeout"] = httpx.Timeout(float(timeout_seconds)).as_dict()
         try:
             # Total wall-clock deadline: bounds the COMPLETE operation (request
             # send plus full streamed-body consumption), not just each HTTP
