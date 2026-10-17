@@ -745,5 +745,203 @@ def test_missing_policy_fails_startup(tmp_path: Path) -> None:
     assert "policy error" in proc.stderr
 
 
+# --- Argument constraints -----------------------------------------------------
+
+
+def test_argument_constraints_load_from_yaml(tmp_path: Path) -> None:
+    load_policy(
+        write_policy(
+            tmp_path,
+            """
+            version: "1"
+            name: arg-constraints
+            default_deny: true
+            allow_tools: [hit]
+            argument_constraints:
+              hit:
+                unknown_arguments: deny
+                arguments:
+                  label:
+                    type: str
+                    max_length: 5
+            """,
+        )
+    )
+    engine = engine_for(tmp_path, """
+        version: "1"
+        name: arg-constraints
+        default_deny: true
+        allow_tools: [hit]
+        argument_constraints:
+          hit:
+            unknown_arguments: deny
+            arguments:
+              label:
+                type: str
+                max_length: 5
+        """)
+    allowed = engine.evaluate("hit", {"label": "hi"})
+    assert allowed.action is Action.ALLOW
+    assert allowed.rule_id == "allow_tools"
+
+    denied = engine.evaluate("hit", {"label": "way-too-long-label"})
+    assert denied.action is Action.DENY
+    assert denied.rule_id == "argument_constraints:hit"
+    assert "way-too-long-label" not in denied.reason
+
+    missing = engine.evaluate("hit", {})
+    assert missing.action is Action.ALLOW  # constraints satisfied, tool allowed
+    assert missing.rule_id == "allow_tools"
+
+
+def test_argument_constraint_required_argument(tmp_path: Path) -> None:
+    policy = engine_for(
+        tmp_path,
+        """
+        version: "1"
+        name: required-arg
+        default_deny: true
+        allow_tools: [hit]
+        argument_constraints:
+          hit:
+            arguments:
+              label:
+                required: true
+                type: str
+        """,
+    )
+    assert policy.evaluate("hit", {"label": "hi"}).action is Action.ALLOW
+    denied = policy.evaluate("hit", {})
+    assert denied.action is Action.DENY
+    assert denied.rule_id == "argument_constraints:hit"
+    assert "label" in denied.reason
+
+
+@pytest.mark.asyncio
+async def test_argument_constraint_denial_blocks_before_downstream(tmp_path: Path) -> None:
+    counter = tmp_path / "counter.log"
+    policy = write_policy(
+        tmp_path,
+        """
+        version: "1"
+        name: constraint-block
+        default_deny: true
+        allow_tools: [hit]
+        argument_constraints:
+          hit:
+            unknown_arguments: deny
+            arguments:
+              label:
+                type: str
+                max_length: 5
+        """,
+    )
+    async with policy_session(
+        policy, downstream=[sys.executable, str(COUNTER_SERVER), str(counter)]
+    ) as session:
+        ok = await session.call_tool("hit", {"label": "hi"})
+        assert ok.isError is False
+        assert [c.text for c in ok.content if c.type == "text"] == ["recorded"]
+        assert counter.read_text(encoding="utf-8") == "hi\n"
+
+        denied = await session.call_tool("hit", {"label": "way-too-long-label"})
+        assert denied.isError is True
+        # The oversized call never reached the downstream tool.
+        assert counter.read_text(encoding="utf-8") == "hi\n"
+
+        texts = [c.text for c in denied.content if c.type == "text"]
+        assert texts and "argument_constraints:hit" in texts[0]
+        assert "way-too-long-label" not in texts[0]
+
+
+@pytest.mark.asyncio
+async def test_argument_constraint_unknown_argument_blocked(tmp_path: Path) -> None:
+    counter = tmp_path / "counter.log"
+    policy = write_policy(
+        tmp_path,
+        """
+        version: "1"
+        name: unknown-arg-block
+        default_deny: true
+        allow_tools: [hit]
+        argument_constraints:
+          hit:
+            unknown_arguments: deny
+            arguments:
+              label:
+                type: str
+        """,
+    )
+    async with policy_session(
+        policy, downstream=[sys.executable, str(COUNTER_SERVER), str(counter)]
+    ) as session:
+        declared = await session.call_tool("hit", {"label": "hi"})
+        assert declared.isError is False
+        extra = await session.call_tool("hit", {"label": "hi", "secret": "x"})
+        assert extra.isError is True
+        assert counter.read_text(encoding="utf-8") == "hi\n"
+
+
+def test_invalid_argument_constraints_fail_startup(tmp_path: Path) -> None:
+    policy = tmp_path / "broken.yaml"
+    policy.write_text(
+        "version: \"1\"\nallow_tools: [hit]\n"
+        "argument_constraints:\n  hit:\n    unknown_arguments: maybe\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [sys.executable, *PROXY_MODULE, "--policy", str(policy), "--",
+         sys.executable, *DEMO_MODULE],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode != 0
+    assert "policy error" in proc.stderr
+
+
+@pytest.mark.asyncio
+async def test_observation_records_argument_constraint_denial(tmp_path: Path) -> None:
+    from agent44.observe import JsonlObserver
+
+    observe_path = tmp_path / "obs.jsonl"
+    policy = write_policy(
+        tmp_path,
+        """
+        version: "1"
+        name: observed-constraints
+        default_deny: true
+        allow_tools: [hit]
+        argument_constraints:
+          hit:
+            arguments:
+              label:
+                type: str
+                max_length: 3
+        """,
+    )
+    counter = tmp_path / "counter.log"
+    async with policy_session(
+        policy,
+        observe_path=observe_path,
+        downstream=[sys.executable, str(COUNTER_SERVER), str(counter)],
+    ) as session:
+        await session.call_tool("hit", {"label": "hi"})
+        denied = await session.call_tool("hit", {"label": "way too long"})
+        assert denied.isError is True
+
+    events = JsonlObserver(observe_path).read_events()
+    assert len(events) == 2
+    allowed, blocked = events[0], events[1]
+    assert allowed["tool_name"] == "hit"
+    assert allowed["policy_action"] == "ALLOW"
+    assert allowed["outcome"] == "success"
+    assert blocked["policy_action"] == "DENY"
+    assert blocked["policy_rule_id"] == "argument_constraints:hit"
+    assert blocked["policy_reason"]
+    assert blocked["outcome"] == "denied"
+    assert blocked["is_error"] is True
+
+
 
 

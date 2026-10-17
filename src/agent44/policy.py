@@ -7,7 +7,8 @@ downstream.
 Decision contract, highest precedence first:
 
   * Hard-deny rules (explicit ``hard_deny_tools`` or rules with
-    ``hard: true``) > explicit ``deny_tools`` > matching DENY argument rules
+    ``hard: true``) > argument constraints for the tool >
+    explicit ``deny_tools`` > matching DENY argument rules
     (first declared wins) > ``allow_tools`` > matching ALLOW argument rules
     (first declared wins) > adapter evaluation (only for calls explicitly
     listed in ``adapter_tools``) > configured default.
@@ -39,6 +40,12 @@ from typing import Any, Protocol, runtime_checkable
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from agent44.argument_policy import (
+    ArgumentPolicy,
+    ArgumentPolicyConfigError,
+    ToolArgumentConstraints,
+)
+
 SUPPORTED_POLICY_VERSIONS = frozenset({"1"})
 
 _FIELD_SEGMENT = r"[A-Za-z_][A-Za-z0-9_]*"
@@ -54,6 +61,7 @@ _POLICY_KEYS = frozenset(
         "deny_tools",
         "hard_deny_tools",
         "adapter_tools",
+        "argument_constraints",
         "rules",
     }
 )
@@ -177,6 +185,9 @@ class Policy(BaseModel):
     deny_tools: list[str] = Field(default_factory=list)
     hard_deny_tools: list[str] = Field(default_factory=list)
     adapter_tools: list[str] = Field(default_factory=list)
+    argument_constraints: dict[str, ToolArgumentConstraints] = Field(
+        default_factory=dict
+    )
     rules: list[PolicyRule] = Field(default_factory=list)
 
     @field_validator("version", mode="before")
@@ -398,6 +409,17 @@ class PolicyEngine:
     def __init__(self, policy: Policy, *, adapter_timeout_seconds: float = 5.0) -> None:
         self.policy = policy
         self.adapter_timeout_seconds = _validate_adapter_timeout(adapter_timeout_seconds)
+        try:
+            self._argument_policy = ArgumentPolicy.from_config(
+                {
+                    "tools": {
+                        name: tc.model_dump()
+                        for name, tc in policy.argument_constraints.items()
+                    }
+                }
+            )
+        except ArgumentPolicyConfigError as exc:
+            raise PolicyError(f"invalid argument constraints: {exc}") from exc
 
     @classmethod
     def from_path(
@@ -421,10 +443,10 @@ class PolicyEngine:
     def match_rules(self, tool_name: str, arguments: dict[str, Any] | None) -> Decision | None:
         """Apply the deterministic tiers; return ``None`` when none matches.
 
-        Precedence, highest first: ``hard_deny_tools``, matching hard DENY
-        rules, ``deny_tools``, matching DENY argument rules, ``allow_tools``,
-        matching ALLOW argument rules. Pure and synchronous: never consults
-        an adapter.
+        Precedence, highest first: ``hard_deny_tools``, argument constraints,
+        matching hard DENY rules, ``deny_tools``, matching DENY argument
+        rules, ``allow_tools``, matching ALLOW argument rules. Pure and
+        synchronous: never consults an adapter.
         """
         policy = self.policy
         args = dict(arguments or {})
@@ -440,6 +462,10 @@ class PolicyEngine:
                 rule_id="hard_deny_tools",
                 **base,
             )
+
+        argument_decision = self._argument_constraint_decision(tool_name, args, base)
+        if argument_decision is not None:
+            return argument_decision
 
         for rule in policy.rules:
             if rule.hard and rule.action is Action.DENY and rule.matches(tool_name, args):
@@ -492,6 +518,28 @@ class PolicyEngine:
                     **base,
                 )
         return None
+
+    def _argument_constraint_decision(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        base: dict[str, Any],
+    ) -> Decision | None:
+        """Evaluate declared argument constraints for one tool call.
+
+        Returns a fail-closed DENY when any constraint is violated, or
+        ``None`` when the call satisfies every constraint (or the tool is
+        unconfigured). Reasons never embed raw argument values.
+        """
+        result = self._argument_policy.evaluate(tool_name, arguments)
+        if result.allowed:
+            return None
+        return Decision(
+            action=Action.DENY,
+            reason=result.reason,
+            rule_id=result.rule_id,
+            **base,
+        )
 
     def _default_decision(self, tool_name: str) -> Decision:
         """Return the configured-default outcome for one tool call."""
