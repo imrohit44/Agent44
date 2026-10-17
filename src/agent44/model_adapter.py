@@ -30,8 +30,10 @@ a reason, or a replay key.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import re
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,58 @@ from agent44.policy import (
     DecisionAdapter,
     PolicyRule,
 )
+
+# Optional per-call adapter timings hook. ModelDecisionAdapter.decide()
+# accepts a caller-owned ``timings_out`` list and appends exactly one
+# AdapterTimings record (durations only, no prompt/response content).
+# Kept local to this module to avoid a provider <-> adapter import cycle:
+# model_adapter must not import local_provider.
+
+
+class AdapterTimings:
+    """Privacy-safe, bounded per-call timing record for adapter diagnosis.
+
+    One float duration (monotonic seconds) per pipeline stage plus the
+    total. Stage names and durations only — no prompt text, no response
+    bytes, no credentials, no scenario payload. One small fixed-size
+    object per call; no buffer, no background worker, no network.
+
+    ``provider`` optionally nests the provider's own stage breakdown
+    (e.g. ``OllamaProvider.complete`` send/read/extract stages) when the
+    injected ``complete`` supplies it. Stored as an opaque object to
+    avoid a provider <-> adapter import cycle; :meth:`as_dict` renders
+    it via its own ``as_dict()`` when available. It never carries
+    prompt/response content either — durations only.
+    """
+
+    __slots__ = (
+        "build_prompt_s",
+        "complete_s",
+        "parse_s",
+        "total_s",
+        "provider",
+    )
+
+    def __init__(self) -> None:
+        self.build_prompt_s: float | None = None
+        self.complete_s: float | None = None
+        self.parse_s: float | None = None
+        self.total_s: float | None = None
+        self.provider: Any | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return stage durations; ``None`` means the stage never ran."""
+        provider_dict: Any = None
+        if self.provider is not None:
+            as_dict = getattr(self.provider, "as_dict", None)
+            provider_dict = as_dict() if callable(as_dict) else repr(self.provider)
+        return {
+            "build_prompt_s": self.build_prompt_s,
+            "complete_s": self.complete_s,
+            "parse_s": self.parse_s,
+            "total_s": self.total_s,
+            "provider": provider_dict,
+        }
 
 # Strict parser limits (treat model output as untrusted).
 MAX_OUTPUT_CHARS = 8192
@@ -241,10 +295,59 @@ class ModelDecisionAdapter(DecisionAdapter):
         tool_name: str,
         arguments: dict[str, Any],
         rules: list[PolicyRule],
+        *,
+        timings_out: list[AdapterTimings] | None = None,
     ) -> AdapterDecision:
-        prompt = self.build_prompt(tool_name, arguments, rules)
-        raw = await self._complete(prompt)
-        return parse_model_decision(raw)
+        """Run one adapter decision with bounded, privacy-safe stage timings.
+
+        Stages: prompt construction, provider ``complete`` (whole provider
+        call, whatever its inner stages are), response parsing, and the
+        total. When the injected provider nests its own stage breakdown
+        (``OllamaProvider.complete``), it is attached as
+        ``timings.provider`` — a separate nested record, not a second
+        timeout source.
+
+        ``timings_out`` is a caller-owned list; at most one record is
+        appended (even when cancelled). Cancellation from the engine's
+        ``asyncio.wait_for`` deadline propagates unchanged: ``complete_s``
+        and ``total_s`` are still stamped by the ``finally`` blocks, stages
+        that never ran stay ``None``, and the ``CancelledError`` is
+        re-raised (never converted to a provider error) so the engine
+        records ``adapter_timeout``.
+        """
+        timings = AdapterTimings()
+        total_started = time.monotonic()
+        try:
+            stage_started = time.monotonic()
+            prompt = self.build_prompt(tool_name, arguments, rules)
+            timings.build_prompt_s = time.monotonic() - stage_started
+            stage_started = time.monotonic()
+            # Forward the provider-stage slot only when the injected
+            # ``complete`` accepts it (OllamaProvider.complete does; test
+            # fakes taking just ``(prompt)`` keep working unchanged).
+            provider_slot: list[Any] | None = None
+            try:
+                accepts_timings = "timings_out" in inspect.signature(self._complete).parameters
+            except (TypeError, ValueError):
+                accepts_timings = False
+            try:
+                if accepts_timings:
+                    provider_slot = []
+                    raw = await self._complete(prompt, timings_out=provider_slot)
+                else:
+                    raw = await self._complete(prompt)
+            finally:
+                timings.complete_s = time.monotonic() - stage_started
+                if provider_slot:
+                    timings.provider = provider_slot[0]
+            stage_started = time.monotonic()
+            decision = parse_model_decision(raw)
+            timings.parse_s = time.monotonic() - stage_started
+            return decision
+        finally:
+            timings.total_s = time.monotonic() - total_started
+            if timings_out is not None:
+                timings_out.append(timings)
 
 
 class FakeModelAdapter(DecisionAdapter):

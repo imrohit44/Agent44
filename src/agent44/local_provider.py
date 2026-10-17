@@ -61,6 +61,42 @@ DEFAULT_MAX_CALLS = 256
 MAX_RESPONSE_BYTES = 1 << 20  # 1 MiB
 
 
+class ProviderTimings:
+    """Privacy-safe, bounded per-call timing record for provider diagnosis.
+
+    Holds one float duration (monotonic seconds) per provider pipeline
+    stage plus the total. Contains no prompt text, no response bytes, no
+    credentials, and no scenario payload — stage names and durations
+    only. One small fixed-size object per call; no buffer, no background
+    worker, no network. Created per call by :meth:`OllamaProvider.complete`
+    when the caller passes a one-slot ``timings_out`` list; the provider
+    appends exactly one record (even on failure/cancellation paths where
+    stages simply stay ``None``).
+
+    Kept separate from ``model_adapter.AdapterTimings`` (adapter-level
+    stages) to avoid a provider <-> adapter import cycle: model_adapter
+    must not import local_provider, so the adapter stores this record
+    opaquely in its ``provider`` slot.
+    """
+
+    __slots__ = ("send_request_s", "read_body_s", "extract_text_s", "total_s")
+
+    def __init__(self) -> None:
+        self.send_request_s: float | None = None
+        self.read_body_s: float | None = None
+        self.extract_text_s: float | None = None
+        self.total_s: float | None = None
+
+    def as_dict(self) -> dict[str, float | None]:
+        """Return stage durations; ``None`` means the stage never ran."""
+        return {
+            "send_request_s": self.send_request_s,
+            "read_body_s": self.read_body_s,
+            "extract_text_s": self.extract_text_s,
+            "total_s": self.total_s,
+        }
+
+
 class LocalProviderError(RuntimeError):
     """Raised for any local-provider configuration or transport failure.
 
@@ -284,13 +320,59 @@ class OllamaProvider:
             headers={"Content-Type": "application/json"},
         )
 
-    async def complete(self, prompt: str) -> str:
+    async def _aclose_shielded(self, response: httpx.Response) -> None:
+        """Close ``response`` even when the caller is being cancelled.
+
+        ``await response.aclose()`` performs I/O and can itself be
+        cancelled when it runs inside a task that ``asyncio.wait_for``
+        (the 5.0 s policy adapter deadline) just cancelled. Shielding
+        the close guarantees client-side resource cleanup on the
+        timeout path. This closes the local response/connection only;
+        it cannot stop server-side generation once the request was
+        received — the server may keep generating until its own
+        limits, but no bytes are consumed and the pooled connection
+        is released rather than leaked.
+        """
+        try:
+            await asyncio.shield(response.aclose())
+        except asyncio.CancelledError:
+            # The caller's cancellation is still pending; the shield
+            # gave aclose a chance to finish, but a second cancel may
+            # have arrived while waiting. Fall back to a best-effort
+            # synchronous close of the underlying stream so no response
+            # is left open to contaminate the next pooled request.
+            close = getattr(response.stream, "aclose", None)
+            if close is not None:
+                try:
+                    await asyncio.shield(close())
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110 - best effort
+                    pass
+            raise
+
+    async def complete(
+        self, prompt: str, *, timings_out: list[ProviderTimings] | None = None
+    ) -> str:
         """Return the raw model text for ``prompt`` via the local Ollama API.
 
         Bounded by the call-count limit, request timeout, and response-size
         cap. Any failure raises :class:`LocalProviderError` so the engine fails
         closed. The outbound body contains only the already-sanitized prompt
         (no raw arguments, results, or credentials).
+
+        Cancellation (the policy engine's 5.0 s adapter deadline via
+        ``asyncio.wait_for``) propagates as ``asyncio.CancelledError`` and is
+        never converted to :class:`LocalProviderError`: the ``finally``
+        closes the HTTP response (shielded, so cleanup itself survives
+        cancellation), the cancellation is re-raised, and the engine
+        records its existing ``adapter_timeout`` fail-closed DENY. No
+        retry is issued and the call budget is not consumed twice.
+
+        When ``timings_out`` (a caller-owned list, normally empty) is
+        given, exactly one :class:`ProviderTimings` record — stage durations
+        only, no prompt/response content — is appended before returning or
+        raising. Stages that never ran stay ``None``. Telemetry never
+        changes the prompt, the parser, the deadline, or metrics; it is a
+        separate diagnostic record, not a second timeout source.
         """
         if self._calls >= self._max_calls:
             raise LocalProviderError(
@@ -299,6 +381,8 @@ class OllamaProvider:
         if not isinstance(prompt, str) or not prompt:
             raise LocalProviderError("prompt must be a non-empty string")
         self._calls += 1
+        timings = ProviderTimings()
+        total_started = time.monotonic()
         # stream=True so _read_capped can enforce the size cap while reading.
         request = self._post(
             "/api/generate",
@@ -310,18 +394,35 @@ class OllamaProvider:
             },
         )
         try:
+            stage_started = time.monotonic()
             response = await self._client.send(request, stream=True)
+            timings.send_request_s = time.monotonic() - stage_started
             try:
+                stage_started = time.monotonic()
                 body = await self._read_capped(response)
+                timings.read_body_s = time.monotonic() - stage_started
             finally:
-                await response.aclose()
+                await self._aclose_shielded(response)
+        except asyncio.CancelledError:
+            # Never misclassify caller cancellation as a provider error:
+            # re-raise so policy.py maps it to adapter_timeout, not
+            # adapter_error.
+            raise
         except LocalProviderError:
             raise
         except httpx.HTTPError as exc:
             raise LocalProviderError(f"local model request failed: {exc}") from exc
         except OSError as exc:
             raise LocalProviderError(f"local model transport failure: {exc}") from exc
-        return _extract_text(body)
+        finally:
+            timings.total_s = time.monotonic() - total_started
+            if timings_out is not None:
+                timings_out.append(timings)
+        stage_started = time.monotonic()
+        text = _extract_text(body)
+        timings.extract_text_s = time.monotonic() - stage_started
+        timings.total_s = time.monotonic() - total_started
+        return text
 
     async def ensure_model_available(self) -> dict[str, Any]:
         """Verify the model is installed locally; never download it.
@@ -479,7 +580,11 @@ class OllamaProvider:
                 try:
                     body = await self._read_capped(response)
                 finally:
-                    await response.aclose()
+                    # Same cancellation hazard as complete(): the total
+                    # deadline cancels this coroutine, so the close itself
+                    # must be shielded. Prime is a warm-up call outside the
+                    # adapter path; it carries no adapter telemetry.
+                    await self._aclose_shielded(response)
         except LocalProviderError:
             raise
         except TimeoutError as exc:
