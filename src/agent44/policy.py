@@ -7,7 +7,10 @@ downstream.
 Decision contract, highest precedence first:
 
   * Hard-deny rules (explicit ``hard_deny_tools`` or rules with
-    ``hard: true``) > argument constraints for the tool >
+    ``hard: true``) > delegated authority (only when ``delegation.enforcement``
+    is ``required``) > provenance-aware restrictions (only when
+    ``provenance.enforcement`` is ``required``) >
+    argument constraints for the tool >
     explicit ``deny_tools`` > matching DENY argument rules
     (first declared wins) > ``allow_tools`` > matching ALLOW argument rules
     (first declared wins) > adapter evaluation (only for calls explicitly
@@ -18,7 +21,9 @@ Decision contract, highest precedence first:
   * Only calls explicitly configured via ``adapter_tools`` may reach a
     decision adapter. Adapter errors, timeouts, missing adapters, and invalid
     adapter outputs fail closed to ``DENY``.
-  * No adapter may override a hard-deny decision.
+  * No adapter may override a hard-deny decision, and no adapter or allow
+    rule may broaden delegated authority or override a delegation,
+    provenance, or argument-policy denial.
 
 Policy evaluation stays independent of MCP response construction:
 ``PolicyEngine.evaluate`` returns a ``Decision`` and never builds protocol
@@ -33,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import time
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -45,7 +51,9 @@ from agent44.argument_policy import (
     ArgumentPolicyConfigError,
     ToolArgumentConstraints,
 )
+from agent44.delegation import DelegationConfig, DelegationContext
 from agent44.provenance import ProvenanceContext, ProvenanceRegistry, TrustClass
+from agent44.transfer import TransferConfig
 
 SUPPORTED_POLICY_VERSIONS = frozenset({"1"})
 
@@ -64,6 +72,7 @@ _POLICY_KEYS = frozenset(
         "adapter_tools",
         "argument_constraints",
         "provenance",
+        "delegation",
         "rules",
     }
 )
@@ -252,6 +261,7 @@ class ProvenanceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enforcement: Literal["off", "required"] = "off"
+    transfer: TransferConfig = Field(default_factory=TransferConfig)
     rules: dict[str, ProvenanceArgumentRule] = Field(default_factory=dict)
 
     @field_validator("rules")
@@ -280,6 +290,7 @@ class Policy(BaseModel):
         default_factory=dict
     )
     provenance: ProvenanceConfig = Field(default_factory=ProvenanceConfig)
+    delegation: DelegationConfig = Field(default_factory=DelegationConfig)
     rules: list[PolicyRule] = Field(default_factory=list)
 
     @field_validator("version", mode="before")
@@ -537,18 +548,27 @@ class PolicyEngine:
         """The validated provenance configuration for this engine."""
         return self.policy.provenance
 
+    @property
+    def delegation(self) -> DelegationConfig:
+        """The validated delegation configuration for this engine."""
+        return self.policy.delegation
+
     def match_rules(
         self,
         tool_name: str,
         arguments: dict[str, Any] | None,
         provenance_context: ProvenanceContext | None = None,
+        delegation_context: DelegationContext | None = None,
     ) -> Decision | None:
         """Apply the deterministic tiers; return ``None`` when none matches.
 
-        Precedence, highest first: ``hard_deny_tools``, provenance-aware
-        rules, argument constraints, matching hard DENY rules, ``deny_tools``,
-        matching DENY argument rules, ``allow_tools``, matching ALLOW argument
-        rules. Pure and synchronous: never consults an adapter.
+        Precedence, highest first: ``hard_deny_tools``, delegated authority
+        (only when ``delegation.enforcement`` is ``required``),
+        provenance-aware rules, argument constraints, matching hard DENY
+        rules, ``deny_tools``, matching DENY argument rules, ``allow_tools``,
+        matching ALLOW argument rules. Pure and synchronous: never consults
+        an adapter, and no allow rule or adapter can broaden delegated
+        authority or override a delegation/provenance denial.
         """
         policy = self.policy
         args = dict(arguments or {})
@@ -564,6 +584,12 @@ class PolicyEngine:
                 rule_id="hard_deny_tools",
                 **base,
             )
+
+        delegation_decision = self._delegation_decision(
+            tool_name, delegation_context, base
+        )
+        if delegation_decision is not None:
+            return delegation_decision
 
         provenance_decision = self._provenance_decision(
             tool_name, args, provenance_context, base
@@ -626,6 +652,51 @@ class PolicyEngine:
                     **base,
                 )
         return None
+
+    def _delegation_decision(
+        self,
+        tool_name: str,
+        delegation_context: DelegationContext | None,
+        base: dict[str, Any],
+    ) -> Decision | None:
+        """Evaluate delegated authority for one tool call.
+
+        When ``delegation.enforcement`` is ``required``, a missing, malformed,
+        revoked, expired, or out-of-grant context fails closed with a stable
+        ``delegation:{tool}:{code}`` rule id. When enforcement is off the tier
+        is skipped and legacy behavior is unchanged. This tier sits only
+        below hard-deny: no allow rule, argument constraint, provenance
+        clause, or adapter can broaden delegated authority. Reasons never
+        embed raw argument values.
+        """
+        delegation = self.policy.delegation
+        if delegation.enforcement != "required":
+            return None
+
+        if isinstance(delegation_context, DelegationContext):
+            code = delegation_context.check(tool_name, now=time.time())
+        else:
+            # Missing or invalid context: fail closed.
+            code = "no_context"
+        if code is None:
+            return None
+
+        reasons = {
+            "no_context": "delegation context missing or invalid; call denied",
+            "revoked": f"delegation is revoked; tool '{tool_name}' denied",
+            "expired": f"delegation expired; tool '{tool_name}' denied",
+            "not_granted": f"tool '{tool_name}' is not within the delegated authority",
+            "exceeds_initiator": (
+                f"tool '{tool_name}' exceeds the initiating principal's authority"
+            ),
+        }
+        reason = reasons.get(code, f"delegation check failed ({code}); call denied")
+        return Decision(
+            action=Action.DENY,
+            reason=reason,
+            rule_id=f"delegation:{tool_name}:{code}",
+            **base,
+        )
 
     def _provenance_decision(
         self,
@@ -830,6 +901,7 @@ class PolicyEngine:
         arguments: dict[str, Any] | None,
         adapter: DecisionAdapter | None = None,
         provenance_context: ProvenanceContext | None = None,
+        delegation_context: DelegationContext | None = None,
     ) -> Decision:
 
         """Apply the full Milestone 4a decision contract for one tool call.
@@ -846,7 +918,7 @@ class PolicyEngine:
         through to the configured policy default. Never returns ``UNDECIDED``.
         """
         policy = self.policy
-        matched = self.match_rules(tool_name, arguments, provenance_context)
+        matched = self.match_rules(tool_name, arguments, provenance_context, delegation_context)
         if matched is not None:
             return matched
 
@@ -918,6 +990,7 @@ class PolicyEngine:
         tool_name: str,
         arguments: dict[str, Any] | None,
         provenance_context: ProvenanceContext | None = None,
+        delegation_context: DelegationContext | None = None,
     ) -> Decision:
         """Return the ALLOW/DENY decision for one tool call.
 
@@ -925,7 +998,7 @@ class PolicyEngine:
         tiers and the configured default without consulting any adapter.
         Never returns ``UNDECIDED``.
         """
-        matched = self.match_rules(tool_name, arguments, provenance_context)
+        matched = self.match_rules(tool_name, arguments, provenance_context, delegation_context)
         if matched is not None:
             return matched
         return self._default_decision(tool_name)

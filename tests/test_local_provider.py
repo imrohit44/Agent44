@@ -352,7 +352,9 @@ def test_local_adapter_model_name_is_tagged() -> None:
 
 def test_default_proxy_path_is_rules_only_not_local() -> None:
     """Without --local-model the proxy must use the offline rules-only adapter."""
-    _params, _observer, _policy, adapter = parse_downstream_args(["--", "python", "s.py"])
+    _params, _observer, _policy, adapter, _delegation = parse_downstream_args(
+        ["--", "python", "s.py"]
+    )
     assert isinstance(adapter, RulesOnlyAdapter)
 
 

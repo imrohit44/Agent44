@@ -156,6 +156,29 @@ def safe_arguments(
     return result
 
 
+# Bounds for Phase 7 evidence identifiers and collections.
+EVIDENCE_ID_MAX_LENGTH = 160
+EVIDENCE_LIST_MAX_LENGTH = 16
+
+
+def _evidence_id(value: Any) -> str:
+    """Bound an evidence identifier to a fixed maximum length."""
+    return str(value)[:EVIDENCE_ID_MAX_LENGTH]
+
+
+def _evidence_list(value: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bound evidence collections: fixed length, string members bounded."""
+    bounded: list[dict[str, Any]] = []
+    for item in value[:EVIDENCE_LIST_MAX_LENGTH]:
+        if not isinstance(item, dict):
+            continue
+        entry: dict[str, Any] = {}
+        for key, val in item.items():
+            entry[str(key)[:64]] = _evidence_id(val) if isinstance(val, str) else val
+        bounded.append(entry)
+    return bounded
+
+
 @dataclass(frozen=True)
 class ObservationEvent:
     """A single serializable observation record.
@@ -183,6 +206,20 @@ class ObservationEvent:
     provenance_id: str | None = None
     trust_class: str | None = None
     validation_transition: str | None = None
+    # Phase 7 delegation/transfer evidence. All fields are optional and are
+    # serialized only when set, preserving prior event shapes. Identifiers and
+    # collections are bounded at serialization time; raw argument values,
+    # prompts, secrets, and response bodies are never recorded.
+    initiator_principal: str | None = None
+    delegate_principal: str | None = None
+    delegation_id: str | None = None
+    parent_delegation_id: str | None = None
+    correlation_id: str | None = None
+    authority_result: str | None = None
+    forwarded: bool | None = None
+    result_state: str | None = None
+    transfer_imports: list[dict[str, Any]] | None = None
+    transfer_exports: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -208,6 +245,24 @@ class ObservationEvent:
             result["trust_class"] = self.trust_class
         if self.validation_transition is not None:
             result["validation_transition"] = self.validation_transition
+        for field_name in (
+            "initiator_principal",
+            "delegate_principal",
+            "delegation_id",
+            "parent_delegation_id",
+            "correlation_id",
+            "authority_result",
+            "result_state",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                result[field_name] = _evidence_id(value)
+        if self.forwarded is not None:
+            result["forwarded"] = bool(self.forwarded)
+        if self.transfer_imports is not None:
+            result["transfer_imports"] = _evidence_list(self.transfer_imports)
+        if self.transfer_exports is not None:
+            result["transfer_exports"] = _evidence_list(self.transfer_exports)
         return result
 
     def to_json(self) -> str:
@@ -229,6 +284,16 @@ class ObservationEvent:
         provenance_id: str | None = None,
         trust_class: str | None = None,
         validation_transition: str | None = None,
+        initiator_principal: str | None = None,
+        delegate_principal: str | None = None,
+        delegation_id: str | None = None,
+        parent_delegation_id: str | None = None,
+        correlation_id: str | None = None,
+        authority_result: str | None = None,
+        forwarded: bool | None = None,
+        result_state: str | None = None,
+        transfer_imports: list[dict[str, Any]] | None = None,
+        transfer_exports: list[dict[str, Any]] | None = None,
     ) -> ObservationEvent:
         return cls(
             event_type=event_type,
@@ -248,6 +313,16 @@ class ObservationEvent:
             provenance_id=provenance_id,
             trust_class=trust_class,
             validation_transition=validation_transition,
+            initiator_principal=initiator_principal,
+            delegate_principal=delegate_principal,
+            delegation_id=delegation_id,
+            parent_delegation_id=parent_delegation_id,
+            correlation_id=correlation_id,
+            authority_result=authority_result,
+            forwarded=forwarded,
+            result_state=result_state,
+            transfer_imports=transfer_imports,
+            transfer_exports=transfer_exports,
         )
 
 
@@ -290,6 +365,16 @@ def record_observation(
     provenance_id: str | None = None,
     trust_class: str | None = None,
     validation_transition: str | None = None,
+    initiator_principal: str | None = None,
+    delegate_principal: str | None = None,
+    delegation_id: str | None = None,
+    parent_delegation_id: str | None = None,
+    correlation_id: str | None = None,
+    authority_result: str | None = None,
+    forwarded: bool | None = None,
+    result_state: str | None = None,
+    transfer_imports: list[dict[str, Any]] | None = None,
+    transfer_exports: list[dict[str, Any]] | None = None,
 ) -> None:
     """Record one observation, never raising.
 
@@ -314,6 +399,16 @@ def record_observation(
             provenance_id=provenance_id,
             trust_class=trust_class,
             validation_transition=validation_transition,
+            initiator_principal=initiator_principal,
+            delegate_principal=delegate_principal,
+            delegation_id=delegation_id,
+            parent_delegation_id=parent_delegation_id,
+            correlation_id=correlation_id,
+            authority_result=authority_result,
+            forwarded=forwarded,
+            result_state=result_state,
+            transfer_imports=transfer_imports,
+            transfer_exports=transfer_exports,
         )
         observer.observe(event)
     except Exception:  # noqa: BLE001 - observation must never break the call

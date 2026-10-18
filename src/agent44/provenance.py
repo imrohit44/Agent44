@@ -97,9 +97,10 @@ class ProvenanceRegistry:
     """In-memory store of provenance records for a single tool call.
 
     The registry is deliberately short-lived: one registry per tool call keeps
-    metadata bounded and avoids any implicit cross-call taint carryover.
-    Cross-call propagation is intentionally out of scope for this phase and is
-    documented as a limitation.
+    metadata bounded and avoids any implicit cross-call taint carryover. The
+    only sanctioned cross-call propagation is the explicit, bounded,
+    single-use transfer mechanism in :mod:`agent44.transfer`, which imports
+    validated records into a fresh registry for a subsequent authorized call.
     """
 
     def __init__(
@@ -118,15 +119,21 @@ class ProvenanceRegistry:
 
     # ------------------------------------------------------------------ creation
 
-    def classify_external(self, *, boundary: str = "external_argument") -> str:
+    def classify_external(
+        self,
+        *,
+        boundary: str = "external_argument",
+        source_category: str = "external_argument",
+    ) -> str:
         """Mark externally controlled data as untrusted at an input boundary.
 
         Returns a fresh provenance id. This is the default classification for
-        every incoming tool-call argument.
+        every incoming tool-call argument; downstream tool results are also
+        external data and are classified here with a ``proxy_result`` boundary.
         """
         return self._create(
             trust_class=TrustClass.UNTRUSTED,
-            source_category="external_argument",
+            source_category=source_category,
             parent_ids=(),
             boundary=boundary,
         )
@@ -275,6 +282,48 @@ class ProvenanceRegistry:
         if provenance_id is None:
             return None
         return self._records.get(provenance_id)
+
+    def import_transferred(
+        self,
+        *,
+        trust_class: TrustClass,
+        source_category: str,
+        parent_ids: tuple[str, ...] = (),
+        validation_transition: str | None = None,
+        boundary: str = "provenance_transfer",
+    ) -> str:
+        """Recreate a record exported by the trusted transfer store.
+
+        This is the *only* registry entry point that accepts an explicit
+        trust class instead of deriving it from a local boundary decision.
+        It must only be called by Agent44's provenance-transfer path, after
+        the transfer store has validated the record against trusted workflow
+        state; never with values taken from caller-supplied data. Unknown
+        parents and exceeded bounds fail with :class:`ProvenanceError`
+        variants rather than importing partial lineage.
+        """
+        if any(self._records.get(pid) is None for pid in parent_ids):
+            raise ProvenanceError("transferred record references unknown parents")
+        if len(parent_ids) > self.max_parents:
+            raise ProvenanceLimitError(
+                f"transferred record parent count exceeds bound {self.max_parents}"
+            )
+        depth = 1
+        for pid in parent_ids:
+            parent = self._records[pid]
+            depth = max(depth, parent.depth + 1)
+        if depth > self.max_depth:
+            raise ProvenanceLimitError(
+                f"transferred chain depth {depth} exceeds bound {self.max_depth}"
+            )
+        return self._create(
+            trust_class=trust_class,
+            source_category=source_category,
+            parent_ids=tuple(parent_ids),
+            validation_transition=validation_transition,
+            boundary=boundary,
+            depth=depth,
+        )
 
     # ------------------------------------------------------------------ internals
 
