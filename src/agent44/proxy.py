@@ -47,6 +47,7 @@ from agent44.policy import (
     RulesOnlyAdapter,
     _validate_adapter_timeout,
 )
+from agent44.provenance import ProvenanceContext, ProvenanceRegistry
 
 logger = logging.getLogger("agent44.proxy")
 
@@ -146,12 +147,52 @@ def build_server(
         except Exception:  # noqa: BLE001 - observation must never break the call
             logger.exception("failed to build observation context; continuing")
 
+        # Build the per-call provenance context. Every incoming tool-call
+        # argument is externally controlled and therefore untrusted at the
+        # proxy input boundary. The registry is fresh per call: metadata stays
+        # bounded and no taint carries over between calls. Caller-supplied
+        # fields (e.g. "trusted": true) are business arguments, not provenance
+        # claims, and are never accepted as authoritative here.
+        provenance_context: ProvenanceContext | None = None
+        provenance_unavailable = False
+        if (
+            state.policy is not None
+            and state.policy.provenance.enforcement == "required"
+        ):
+            try:
+                registry = ProvenanceRegistry()
+                values: dict[str, str | None] = {}
+                for argument_name in (arguments or {}):
+                    values[argument_name] = registry.classify_external(
+                        boundary="proxy_input"
+                    )
+                provenance_context = ProvenanceContext(
+                    registry=registry, values=values
+                )
+            except Exception:  # noqa: BLE001 - provenance setup must fail closed
+                logger.exception("failed to build provenance context; failing closed")
+                provenance_unavailable = True
+
         # Evaluate the policy *before* forwarding. Any evaluation failure
         # fails closed: enforcement must never silently become a no-op.
         decision: Decision | None = None
         if state.policy is not None:
             try:
-                decision = await state.policy.decide(name, arguments, state.adapter)
+                if provenance_unavailable:
+                    decision = Decision(
+                        action=Action.DENY,
+                        reason="provenance context unavailable; call denied",
+                        rule_id="provenance:fail_closed",
+                        policy_id=state.policy.policy_id,
+                        policy_version=state.policy.policy_version,
+                    )
+                else:
+                    decision = await state.policy.decide(
+                        name,
+                        arguments,
+                        state.adapter,
+                        provenance_context=provenance_context,
+                    )
             except Exception:  # noqa: BLE001 - enforcement must fail closed
                 logger.exception("policy evaluation failed; denying call")
                 decision = Decision(
@@ -175,6 +216,13 @@ def build_server(
                     policy_action=decision.action.value,
                     policy_rule_id=decision.rule_id,
                     policy_reason=decision.reason,
+                    provenance_id=decision.provenance_id,
+                    trust_class=(
+                        decision.trust_class.value
+                        if decision.trust_class is not None
+                        else None
+                    ),
+                    validation_transition=decision.validation_transition,
                 )
             # Reason only: raw argument values are never echoed back.
             return types.CallToolResult(

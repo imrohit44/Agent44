@@ -180,9 +180,12 @@ class ObservationEvent:
     policy_action: str | None = None
     policy_rule_id: str | None = None
     policy_reason: str | None = None
+    provenance_id: str | None = None
+    trust_class: str | None = None
+    validation_transition: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "schema_version": self.schema_version,
             "event_type": self.event_type,
             "tool_name": self.tool_name,
@@ -199,6 +202,13 @@ class ObservationEvent:
             "policy_rule_id": self.policy_rule_id,
             "policy_reason": self.policy_reason,
         }
+        if self.provenance_id is not None:
+            result["provenance_id"] = self.provenance_id
+        if self.trust_class is not None:
+            result["trust_class"] = self.trust_class
+        if self.validation_transition is not None:
+            result["validation_transition"] = self.validation_transition
+        return result
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":"))
@@ -216,6 +226,9 @@ class ObservationEvent:
         policy_action: str | None = None,
         policy_rule_id: str | None = None,
         policy_reason: str | None = None,
+        provenance_id: str | None = None,
+        trust_class: str | None = None,
+        validation_transition: str | None = None,
     ) -> ObservationEvent:
         return cls(
             event_type=event_type,
@@ -232,6 +245,9 @@ class ObservationEvent:
             policy_action=policy_action,
             policy_rule_id=policy_rule_id,
             policy_reason=policy_reason,
+            provenance_id=provenance_id,
+            trust_class=trust_class,
+            validation_transition=validation_transition,
         )
 
 
@@ -271,6 +287,9 @@ def record_observation(
     policy_action: str | None = None,
     policy_rule_id: str | None = None,
     policy_reason: str | None = None,
+    provenance_id: str | None = None,
+    trust_class: str | None = None,
+    validation_transition: str | None = None,
 ) -> None:
     """Record one observation, never raising.
 
@@ -292,6 +311,9 @@ def record_observation(
             policy_action=policy_action,
             policy_rule_id=policy_rule_id,
             policy_reason=policy_reason,
+            provenance_id=provenance_id,
+            trust_class=trust_class,
+            validation_transition=validation_transition,
         )
         observer.observe(event)
     except Exception:  # noqa: BLE001 - observation must never break the call

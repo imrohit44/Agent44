@@ -35,16 +35,17 @@ import math
 import re
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from agent44.argument_policy import (
     ArgumentPolicy,
     ArgumentPolicyConfigError,
     ToolArgumentConstraints,
 )
+from agent44.provenance import ProvenanceContext, ProvenanceRegistry, TrustClass
 
 SUPPORTED_POLICY_VERSIONS = frozenset({"1"})
 
@@ -62,6 +63,7 @@ _POLICY_KEYS = frozenset(
         "hard_deny_tools",
         "adapter_tools",
         "argument_constraints",
+        "provenance",
         "rules",
     }
 )
@@ -85,13 +87,23 @@ class Action(StrEnum):
 
 
 class Decision(BaseModel):
-    """A typed policy decision, independent of MCP response construction."""
+    """A typed policy decision, independent of MCP response construction.
+
+    ``action`` and ``rule_id`` are always populated. Provenance-aware tiers
+    additionally populate ``provenance_id``, ``trust_class`` and
+    ``validation_transition`` when a provenance-aware rule affected the
+    decision. These fields are safe observation metadata: they never embed raw
+    argument values or secrets.
+    """
 
     action: Action
     reason: str
     rule_id: str
     policy_id: str
     policy_version: str | None = None
+    provenance_id: str | None = None
+    trust_class: TrustClass | None = None
+    validation_transition: str | None = None
 
 
 def _lookup(arguments: dict[str, Any], path: str) -> tuple[Any, bool]:
@@ -174,6 +186,85 @@ class PolicyRule(BaseModel):
         return self.tool == tool_name and self.when.matches(arguments)
 
 
+class ProvenanceArgumentRule(BaseModel):
+    """Provenance restrictions for the arguments of a single tool.
+
+    Every clause is a *restriction*: it can only deny a call, never grant
+    authority that another tier has withheld. A call satisfies the rule only
+    when every applicable clause passes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Deny the argument when its effective provenance is untrusted or
+    # derived-untrusted.
+    deny_untrusted: list[str] = Field(default_factory=list)
+    # Deny the argument when no provenance record has been established for it.
+    require_known: list[str] = Field(default_factory=list)
+    # Allow only the listed trust classes for the argument.
+    allowed_trust_classes: dict[str, list[TrustClass]] = Field(
+        default_factory=dict
+    )
+    # Require the argument's record to carry this validation transition.
+    require_transition: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("deny_untrusted", "require_known")
+    @classmethod
+    def _non_empty_argument_names(cls, value: list[str]) -> list[str]:
+        for name in value:
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("argument names must be non-empty strings")
+        return value
+
+    @field_validator("allowed_trust_classes")
+    @classmethod
+    def _valid_trust_classes(
+        cls, value: dict[str, list[TrustClass]]
+    ) -> dict[str, list[TrustClass]]:
+        for arg_name, classes in value.items():
+            if not arg_name.strip():
+                raise ValueError("argument names must be non-empty strings")
+            if not classes:
+                raise ValueError(f"trust classes for {arg_name!r} must be non-empty")
+        return value
+
+    @field_validator("require_transition")
+    @classmethod
+    def _non_empty_transitions(cls, value: dict[str, str]) -> dict[str, str]:
+        for arg_name, transition_id in value.items():
+            if not arg_name.strip():
+                raise ValueError("argument names must be non-empty strings")
+            if not transition_id or not transition_id.strip():
+                raise ValueError(f"transition id for {arg_name!r} must be non-empty")
+        return value
+
+
+class ProvenanceConfig(BaseModel):
+    """Provenance policy configuration.
+
+    ``enforcement=off`` preserves legacy behavior: provenance metadata is not
+    consulted and no provenance-aware denial can occur. ``enforcement=required``
+    activates the provenance tier: configured restrictions are evaluated before
+    argument constraints and a missing/invalid provenance reference fails
+    closed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enforcement: Literal["off", "required"] = "off"
+    rules: dict[str, ProvenanceArgumentRule] = Field(default_factory=dict)
+
+    @field_validator("rules")
+    @classmethod
+    def _tool_names(
+        cls, value: dict[str, ProvenanceArgumentRule]
+    ) -> dict[str, ProvenanceArgumentRule]:
+        for name in value:
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("tool names must be non-empty strings")
+        return value
+
+
 class Policy(BaseModel):
     """A validated, versioned policy configuration."""
 
@@ -188,6 +279,7 @@ class Policy(BaseModel):
     argument_constraints: dict[str, ToolArgumentConstraints] = Field(
         default_factory=dict
     )
+    provenance: ProvenanceConfig = Field(default_factory=ProvenanceConfig)
     rules: list[PolicyRule] = Field(default_factory=list)
 
     @field_validator("version", mode="before")
@@ -440,13 +532,23 @@ class PolicyEngine:
     def policy_version(self) -> str:
         return self.policy.version
 
-    def match_rules(self, tool_name: str, arguments: dict[str, Any] | None) -> Decision | None:
+    @property
+    def provenance(self) -> ProvenanceConfig:
+        """The validated provenance configuration for this engine."""
+        return self.policy.provenance
+
+    def match_rules(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None,
+        provenance_context: ProvenanceContext | None = None,
+    ) -> Decision | None:
         """Apply the deterministic tiers; return ``None`` when none matches.
 
-        Precedence, highest first: ``hard_deny_tools``, argument constraints,
-        matching hard DENY rules, ``deny_tools``, matching DENY argument
-        rules, ``allow_tools``, matching ALLOW argument rules. Pure and
-        synchronous: never consults an adapter.
+        Precedence, highest first: ``hard_deny_tools``, provenance-aware
+        rules, argument constraints, matching hard DENY rules, ``deny_tools``,
+        matching DENY argument rules, ``allow_tools``, matching ALLOW argument
+        rules. Pure and synchronous: never consults an adapter.
         """
         policy = self.policy
         args = dict(arguments or {})
@@ -462,6 +564,12 @@ class PolicyEngine:
                 rule_id="hard_deny_tools",
                 **base,
             )
+
+        provenance_decision = self._provenance_decision(
+            tool_name, args, provenance_context, base
+        )
+        if provenance_decision is not None:
+            return provenance_decision
 
         argument_decision = self._argument_constraint_decision(tool_name, args, base)
         if argument_decision is not None:
@@ -517,6 +625,107 @@ class PolicyEngine:
                     rule_id=rule.id,
                     **base,
                 )
+        return None
+
+    def _provenance_decision(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        provenance_context: ProvenanceContext | None,
+        base: dict[str, Any],
+    ) -> Decision | None:
+        """Evaluate provenance-aware restrictions for one tool call.
+
+        Returns a fail-closed DENY when any configured provenance restriction
+        is violated, or ``None`` when the call satisfies every restriction (or
+        the tool is unconfigured / provenance enforcement is off).
+
+        Denials here cannot be overridden by any lower tier: hard-deny is the
+        only tier above provenance-aware rules. Reasons never embed raw
+        argument values.
+        """
+        policy = self.policy
+        provenance = policy.provenance
+        if provenance.enforcement != "required":
+            return None
+
+        rule = provenance.rules.get(tool_name)
+        if rule is None:
+            # No provenance restriction configured for this tool: no denial.
+            return None
+
+        if provenance_context is not None:
+            registry = provenance_context.registry
+            values = provenance_context.values
+        else:
+            # Enforcement is required but no provenance context was supplied:
+            # fail closed by evaluating every restriction against an empty
+            # context, so no argument can be established or trusted.
+            registry = ProvenanceRegistry()
+            values = {}
+
+        def denial(
+            argument_name: str,
+            category: str,
+            trust_class: TrustClass | None = None,
+            provenance_id: str | None = None,
+            validation_transition: str | None = None,
+        ) -> Decision:
+            return Decision(
+                action=Action.DENY,
+                reason=(
+                    f"provenance policy denied argument {argument_name!r} ({category})"
+                ),
+                rule_id=f"provenance:{tool_name}:{category}:{argument_name}",
+                provenance_id=provenance_id,
+                trust_class=trust_class,
+                validation_transition=validation_transition,
+                **base,
+            )
+
+        # Check each configured clause in a deterministic order.
+        for argument_name in sorted(rule.deny_untrusted):
+            pid = values.get(argument_name)
+            trust = registry.effective_trust(pid)
+            if trust in (TrustClass.UNTRUSTED, TrustClass.DERIVED_UNTRUSTED):
+                return denial(
+                    argument_name,
+                    "deny_untrusted",
+                    trust_class=trust,
+                    provenance_id=pid,
+                )
+
+        for argument_name in sorted(rule.require_known):
+            pid = values.get(argument_name)
+            if pid is None:
+                return denial(argument_name, "require_known")
+
+        for argument_name in sorted(rule.allowed_trust_classes):
+            pid = values.get(argument_name)
+            trust = registry.effective_trust(pid)
+            allowed = set(rule.allowed_trust_classes[argument_name])
+            if trust not in allowed:
+                return denial(
+                    argument_name,
+                    "allowed_trust_classes",
+                    trust_class=trust,
+                    provenance_id=pid,
+                )
+
+        for argument_name in sorted(rule.require_transition):
+            pid = values.get(argument_name)
+            record = registry.get_record(pid)
+            required = rule.require_transition[argument_name]
+            if record is None or record.validation_transition != required:
+                return denial(
+                    argument_name,
+                    "require_transition",
+                    provenance_id=pid,
+                    validation_transition=record.validation_transition
+                    if record is not None
+                    else None,
+                )
+
         return None
 
     def _argument_constraint_decision(
@@ -620,8 +829,8 @@ class PolicyEngine:
         tool_name: str,
         arguments: dict[str, Any] | None,
         adapter: DecisionAdapter | None = None,
+        provenance_context: ProvenanceContext | None = None,
     ) -> Decision:
-
 
         """Apply the full Milestone 4a decision contract for one tool call.
 
@@ -637,7 +846,7 @@ class PolicyEngine:
         through to the configured policy default. Never returns ``UNDECIDED``.
         """
         policy = self.policy
-        matched = self.match_rules(tool_name, arguments)
+        matched = self.match_rules(tool_name, arguments, provenance_context)
         if matched is not None:
             return matched
 
@@ -704,14 +913,19 @@ class PolicyEngine:
 
         return self._default_decision(tool_name)
 
-    def evaluate(self, tool_name: str, arguments: dict[str, Any] | None) -> Decision:
+    def evaluate(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None,
+        provenance_context: ProvenanceContext | None = None,
+    ) -> Decision:
         """Return the ALLOW/DENY decision for one tool call.
 
         Synchronous compatibility entry point: applies the deterministic
         tiers and the configured default without consulting any adapter.
         Never returns ``UNDECIDED``.
         """
-        matched = self.match_rules(tool_name, arguments)
+        matched = self.match_rules(tool_name, arguments, provenance_context)
         if matched is not None:
             return matched
         return self._default_decision(tool_name)
