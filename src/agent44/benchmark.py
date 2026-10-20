@@ -22,9 +22,16 @@ Profiles
   or transfer tiers are active.
 * ``enforcement``: the same evaluation policy with
   ``provenance.enforcement=required``, ``delegation.enforcement=required`` and
-  a permissive active delegation manifest, plus the configured transfer
-  resource bounds. The extension suite exercises the new capabilities only
-  under this configuration.
+  the configured transfer resource bounds, plus a permissive delegation
+  manifest written next to the profile policy. The manifest is configuration
+  input only: it is NOT passed to the Group A proxy run, and Group A calls are
+  plain corpus tool calls with no ``__agent44__correlation_id`` control field.
+  Under this profile the gateway's fail-closed request validation therefore
+  denies every Group A call (rule id ``request:{tool}:missing_correlation``);
+  even with a correlation id, the engine's delegation tier would deny it
+  (``delegation:{tool}:no_context``) because no delegation context is loaded.
+  The extension suite exercises the new capabilities only under this
+  configuration.
 
 The benchmark is deterministic and offline. It never performs model inference,
 network access, or any remote service call.
@@ -891,12 +898,22 @@ def _group_a_metrics(records: list[dict[str, Any]], group_label: str) -> dict[st
         "group": group_label,
         "total_scenarios": len(records),
         "executed_scenarios": len(executed),
-        "successful": len(matches),
+        # "successful" counts scenarios that produced a harness-valid decision;
+        # verdict quality is reported separately by agreement/false_* and the
+        # failed_scenarios count (which tracks harness-level failures only).
+        "successful": len(executed),
+        "matched": len(matches),
         "failed_scenarios": len(failed),
         "expected_allow": expected_allow,
         "expected_deny": expected_deny,
-        "true_allow": len(matches),
-        "true_deny": len(executed) - len(matches),
+        # True positives per ground-truth class: only scenarios whose expected
+        # value was observed count towards their own class.
+        "true_allow": sum(
+            1 for r in executed if r.get("expected") == "ALLOW" and _matches_expected(r) is True
+        ),
+        "true_deny": sum(
+            1 for r in executed if r.get("expected") == "DENY" and _matches_expected(r) is True
+        ),
         "false_allows": len(false_allows),
         "false_denies": len(false_denies),
         "agreement": _rate(len(matches), len(executed)),
@@ -958,14 +975,25 @@ def _group_b_metrics(extensions: tuple[ExtensionCase, ...], resolutions: list[di
 def _combination_header(group_a: dict, group_b: dict) -> dict[str, Any]:
     return {
         "note": (
-            "Combined results mix the 94-scenario legacy development corpus (Group A) "
-            "with the Phase 7 synthetic extension suite (Group B). This is a mixed "
-            "corpus; metrics are reported per group and combined only for total "
-            "execution counts, never as a single correctness rate."
+            "Combined results mix the pre-declared 30-scenario Group A "
+            "selection (drawn from the 94-scenario development partition) "
+            "with the Phase 7 synthetic extension suite (Group B). This is a "
+            "mixed corpus; metrics are reported per group and combined only "
+            "for total execution counts, never as a single correctness rate."
         ),
         "total_scenarios": group_a["total_scenarios"] + group_b["total_scenarios"],
         "total_executed": group_a["executed_scenarios"] + group_b["total_scenarios"],
     }
+
+
+def _rule_counts(records: list[dict[str, Any]]) -> dict[str, int]:
+    """Count observed deny rule ids across the records that were blocked."""
+    counts: dict[str, int] = {}
+    for record in records:
+        if record.get("blocked") is True:
+            rule = str(record.get("policy_rule_id"))
+            counts[rule] = counts.get(rule, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _write_run_outputs(
@@ -975,9 +1003,25 @@ def _write_run_outputs(
     g_a_enforcement: dict[str, Any],
     group_b: dict[str, Any],
     combined: dict[str, Any],
+    group_a_records: dict[str, list[dict[str, Any]]],
+    group_b_resolutions: list[dict[str, Any]],
 ) -> None:
-    """Write results.json, summary.md, and manifest.json to the run output directory."""
+    """Write results.json, summary.md, manifest.json, and the per-scenario
+    decision records needed to independently recompute every reported metric."""
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Per-scenario decision records: the evidence every Group A/Group B number
+    # in results.json is computed from. Written before the aggregates so a
+    # reader can recompute agreement / false-allow / false-deny / block rate
+    # without re-running the benchmark.
+    record_payloads = {
+        "group_a_baseline_records.json": group_a_records.get("group_a_baseline", []),
+        "group_a_enforcement_records.json": group_a_records.get("group_a_enforcement", []),
+        "group_b_resolutions.json": group_b_resolutions,
+    }
+    for filename, payload in record_payloads.items():
+        write_json(output_dir / filename, payload)
+    artifact_index = {Path(name).stem: name for name in record_payloads}
 
     # results.json — detailed machine-readable output
     results = {
@@ -992,6 +1036,7 @@ def _write_run_outputs(
         "group_a_enforcement": g_a_enforcement,
         "group_b": group_b,
         "combined": combined,
+        "artifacts": artifact_index,
     }
     write_json(output_dir / "results.json", results)
 
@@ -1006,10 +1051,18 @@ def _write_run_outputs(
         f"- Selection: {selection.label} ({selection.count} scenarios)",
         f"- Baseline executed: {g_a_baseline['executed_scenarios']}/{g_a_baseline['total_scenarios']}",
         f"- Baseline agreement: {g_a_baseline['agreement']}",
+        f"- Baseline false allows: {g_a_baseline['false_allows']}",
+        f"- Baseline false denies: {g_a_baseline['false_denies']}",
         f"- Baseline block rate: {g_a_baseline['tool_call_block_rate']}",
         f"- Enforcement executed: {g_a_enforcement['executed_scenarios']}/{g_a_enforcement['total_scenarios']}",
         f"- Enforcement agreement: {g_a_enforcement['agreement']}",
+        f"- Enforcement false allows: {g_a_enforcement['false_allows']}",
+        f"- Enforcement false denials: {g_a_enforcement['false_denies']}",
         f"- Enforcement block rate: {g_a_enforcement['tool_call_block_rate']}",
+        "",
+        "### Deny rule ids observed (from group_a_*_records.json)",
+        f"- Baseline: {json.dumps(_rule_counts(group_a_records.get('group_a_baseline', [])), ensure_ascii=False)}",
+        f"- Enforcement: {json.dumps(_rule_counts(group_a_records.get('group_a_enforcement', [])), ensure_ascii=False)}",
         "",
         "## Group B (extension suite)",
         f"- Engine cases: {group_b['engine_cases']}",
@@ -1110,7 +1163,19 @@ async def _execute(
     g_a_enforcement = _group_a_metrics(group_a_enforcements, group_label="group_a_enforcement")
     combined = _combination_header(g_a_baseline, group_b)
 
-    _write_run_outputs(output_dir, selection, g_a_baseline, g_a_enforcement, group_b, combined)
+    _write_run_outputs(
+        output_dir,
+        selection,
+        g_a_baseline,
+        g_a_enforcement,
+        group_b,
+        combined,
+        group_a_records={
+            "group_a_baseline": group_a_baselines,
+            "group_a_enforcement": group_a_enforcements,
+        },
+        group_b_resolutions=resolutions,
+    )
 
     return {
         "profiles": {
