@@ -11,22 +11,19 @@ async def _run_profile_once(
     trials: int = 1,
     adapter_deadline: float = 5.0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    import asyncio
-
     import agent44.eval_runner as eval_runner
 
-    report = await asyncio.run(
-        eval_runner.evaluate(
-            observe_path=None,
-            policy_path=str(profile_dir / "policy.yaml"),
-            local_model=None,
-            adapter_replay=None,
-            partition="development",
-            select_ids=list(select_ids),
-            trials=trials,
-            bootstrap_seed=0,
-            adapter_deadline=adapter_deadline,
-        )
+    policy_filename = "policy.yaml" if profile_name == "enforcement" else "baseline_policy.yaml"
+    report = await eval_runner.evaluate(
+        observe_path=None,
+        policy_path=str(profile_dir / policy_filename),
+        local_model=None,
+        adapter_replay=None,
+        partition="development",
+        select_ids=list(select_ids),
+        trials=trials,
+        bootstrap_seed=0,
+        adapter_deadline=adapter_deadline,
     )
     return list(report["results"]), dict(report["summary"])
 
@@ -65,7 +62,8 @@ def _build_engine(policy_text: str | None = None) -> PolicyEngine:
 
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8") as fh:
         fh.write(policy_text)
-        return PolicyEngine.from_path(fh.name)
+        fh.flush()
+    return PolicyEngine.from_path(fh.name)
 
 
 def _delegation_context_for(now: float) -> DelegationContext:

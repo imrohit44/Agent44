@@ -28,7 +28,9 @@ def group_a_ids(partition: str = "development") -> tuple[str, ...]:
     if partition != "development":
         raise ValueError(f"group A is development-only; got partition={partition!r}")
     assigned = corpus_module.partition_map()
-    return tuple(case.id for case in corpus_module.CASES if assigned.get(case.id) == "development")
+    return tuple(
+        sorted(case.id for case in corpus_module.CASES if assigned.get(case.id) == "development")
+    )
 
 
 def load_group_a_selection(path: Path) -> SelectedGroupA:

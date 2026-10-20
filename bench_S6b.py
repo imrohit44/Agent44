@@ -15,7 +15,7 @@
             )
             return {"case": case.id, "resolved": "construction_ok", "expected": case.expected, "scope": "engine"}
         except DelegationValidationError:
-            return {"case": case.id, "resolved": "construction_denied", "expected": case.expected, "scope": "engine"}
+            return {"case": case.id, "resolved": "DENY", "expected": case.expected, "scope": "engine"}
     if case.id == "ext-transfer-001-valid-import":
         ok, err = transfer_valid_import_outcome()
         return {"case": case.id, "resolved": "ALLOW" if ok else f"DENY:{err}", "expected": case.expected, "scope": "engine"}

@@ -22,9 +22,16 @@ Profiles
   or transfer tiers are active.
 * ``enforcement``: the same evaluation policy with
   ``provenance.enforcement=required``, ``delegation.enforcement=required`` and
-  a permissive active delegation manifest, plus the configured transfer
-  resource bounds. The extension suite exercises the new capabilities only
-  under this configuration.
+  the configured transfer resource bounds, plus a permissive delegation
+  manifest written next to the profile policy. The manifest is configuration
+  input only: it is NOT passed to the Group A proxy run, and Group A calls are
+  plain corpus tool calls with no ``__agent44__correlation_id`` control field.
+  Under this profile the gateway's fail-closed request validation therefore
+  denies every Group A call (rule id ``request:{tool}:missing_correlation``);
+  even with a correlation id, the engine's delegation tier would deny it
+  (``delegation:{tool}:no_context``) because no delegation context is loaded.
+  The extension suite exercises the new capabilities only under this
+  configuration.
 
 The benchmark is deterministic and offline. It never performs model inference,
 network access, or any remote service call.
@@ -33,6 +40,7 @@ network access, or any remote service call.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import sys
@@ -98,3 +106,33 @@ def load_json(path: Path) -> Any:
 
 def read_lines(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines()
+
+
+def read_json(path: Path) -> list[dict[str, Any]]:
+    """Read a JSONL file and return a list of parsed JSON objects, one per line."""
+    results: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line:
+                results.append(json.loads(line))
+    return results
+
+
+def _git_commit() -> str:
+    """Return the short SHA of the current HEAD commit, or 'unknown' if git is unavailable."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (OSError, FileNotFoundError):
+        pass
+    return "unknown"

@@ -9,6 +9,7 @@ def _fresh_store() -> ProvenanceTransferStore:
 
 def transfer_valid_import_outcome() -> tuple[bool, str | None]:
     store = _fresh_store()
+    store.ensure_workflow(workflow_id="wf-b1", principal_id="p-b1")
     registry = ProvenanceRegistry()
     top = registry.classify_external(boundary="proxy_input")
     handle = store.export(
@@ -38,6 +39,7 @@ def transfer_valid_import_outcome() -> tuple[bool, str | None]:
 
 def transfer_forged_outcome() -> tuple[bool, str | None]:
     store = _fresh_store()
+    store.ensure_workflow(workflow_id="wf-foreign", principal_id="p-foreign")
     registry = ProvenanceRegistry()
     top = registry.classify_external(boundary="proxy_input")
     handle = store.export(
@@ -67,6 +69,7 @@ def transfer_forged_outcome() -> tuple[bool, str | None]:
 
 def transfer_replay_outcome() -> tuple[bool, str | None]:
     store = _fresh_store()
+    store.ensure_workflow(workflow_id="wf-r1", principal_id="p-r1")
     registry = ProvenanceRegistry()
     top = registry.classify_external(boundary="proxy_input")
     handle = store.export(

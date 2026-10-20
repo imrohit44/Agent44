@@ -69,7 +69,19 @@ async def _execute(
     g_a_enforcement = _group_a_metrics(group_a_enforcements, group_label="group_a_enforcement")
     combined = _combination_header(g_a_baseline, group_b)
 
-    _write_run_outputs(output_dir, selection, g_a_baseline, group_b, combined)
+    _write_run_outputs(
+        output_dir,
+        selection,
+        g_a_baseline,
+        g_a_enforcement,
+        group_b,
+        combined,
+        group_a_records={
+            "group_a_baseline": group_a_baselines,
+            "group_a_enforcement": group_a_enforcements,
+        },
+        group_b_resolutions=resolutions,
+    )
 
     return {
         "profiles": {

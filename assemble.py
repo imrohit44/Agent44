@@ -14,26 +14,13 @@ s3a = rd("bench_S3a.py")
 assert s3a[-1].strip() == ")", s3a[-1]
 s3a = s3a[:-1]
 
-# bench_S5: drop the dead 'resolve_extension_case' dispatcher (lines 79-86).
-s5 = rd("bench_S5.py")
-out_s5 = []
-skip = False
-for i, line in enumerate(s5, 1):
-    if i == 79:
-        skip = True
-    if skip and i == 86:
-        skip = False
-        continue
-    if not skip:
-        out_s5.append(line)
-
 parts = [
     rd("bench_S1.py"),
     rd("bench_S2.py"),
     s3a,
     rd("bench_S3b.py"),
     rd("bench_S4.py"),
-    out_s5,
+    rd("bench_S5.py"),
     rd("bench_S6a.py"),
     rd("bench_S6b.py"),
     rd("bench_S7a.py"),

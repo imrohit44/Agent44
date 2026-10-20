@@ -1,5 +1,6 @@
 def transfer_expired_outcome() -> tuple[bool, str | None]:
     store = _fresh_store()
+    store.ensure_workflow(workflow_id="wf-e1", principal_id="p-e1")
     registry = ProvenanceRegistry()
     top = registry.classify_external(boundary="proxy_input")
     handle = store.export(
@@ -29,6 +30,7 @@ def transfer_expired_outcome() -> tuple[bool, str | None]:
 
 def transfer_unauthorized_outcome() -> tuple[bool, str | None]:
     store = _fresh_store()
+    store.ensure_workflow(workflow_id="wf-u1", principal_id="p-u1")
     registry = ProvenanceRegistry()
     top = registry.classify_external(boundary="proxy_input")
     handle = store.export(

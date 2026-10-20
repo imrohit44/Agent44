@@ -4,7 +4,7 @@
 
 
 def _load_eval_policy() -> str:
-    return PROTOCOL_V1.read_text(encoding="utf-8")
+    return (EVAL_DIR / "policy_eval_4a.yaml").read_text(encoding="utf-8")
 
 
 def build_rule_policy_text() -> str:

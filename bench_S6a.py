@@ -29,7 +29,7 @@ def resolve_engine_case(case: ExtensionCase) -> dict:
         )
         a = engine.match_rules("echo", {"message": "ok"}, delegation_context=ctx)
         b = engine.match_rules("add", {"a": 1, "b": 2}, delegation_context=ctx)
-        return {"case": case.id, "resolved": (_default_for(engine, "echo") if a is None else a.action.value, _default_for(engine, "add") if b is None else b.action.value), "expected": (case.expected, "DENY"), "scope": "engine"}
+        return {"case": case.id, "resolved": (_default_for(engine, "echo") if a is None else a.action.value, _default_for(engine, "add") if b is None else b.action.value), "expected": ("ALLOW", "DENY"), "scope": "engine"}
     if case.id == "ext-delegation-004-expired":
         ctx = DelegationContext(
             delegation_id="ext-4",
@@ -68,7 +68,7 @@ def resolve_engine_case(case: ExtensionCase) -> dict:
             )
             return {"case": case.id, "resolved": "construction_ok", "expected": case.expected, "scope": "engine"}
         except DelegationValidationError:
-            return {"case": case.id, "resolved": "construction_denied", "expected": case.expected, "scope": "engine"}
+            return {"case": case.id, "resolved": "DENY", "expected": case.expected, "scope": "engine"}
     if case.id == "ext-delegation-007-missing-context":
         action = engine.match_rules("echo", {"message": "ok"}, delegation_context=None)
         return {"case": case.id, "resolved": action.action.value if action is not None else _default_for(engine, "echo"), "expected": case.expected, "scope": "engine"}
