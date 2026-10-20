@@ -1,7 +1,7 @@
 # Phase 8 Benchmark Report
 
 **Generated:** 2026-10-19T06:27:18Z  
-**Revision:** facb438  
+**Revision:** facb438 (code advanced to de5a97c after this report; see Phase 8 factual correction below)  
 **Policy:** `evaluation/policy_eval_4a.yaml`  
 **Corpus version:** 4c.0.0
 
@@ -61,7 +61,7 @@ The extension suite exercises the delegation and cross-call provenance-transfer 
 | Engine cases | 15 |
 | Engine matched | 15/15 (agreement 1.0) |
 | Proxy integration cases | 1 |
-| Proxy non-forwarding verified | 0 |
+| Proxy non-forwarding verified | 1 |
 
 ### Delegation Capabilities
 
@@ -92,9 +92,9 @@ The extension suite exercises the delegation and cross-call provenance-transfer 
 
 | Capability | Result |
 |------------|--------|
-| downstream_non_forwarding | Not verified (proxy-level integration test placeholder) |
+| downstream_non_forwarding | Verified (proxy-level integration test executed; downstream not called) |
 
-All 15 engine-level extension scenarios pass. The proxy-level downstream non-forwarding test case is registered but the integration harness is a placeholder — it constructs the resolution record but does not execute the live proxy subprocess for this case.
+All 15 engine-level extension scenarios pass. The proxy-level downstream non-forwarding integration case executes the live proxy subprocess against a demo downstream server: the delegated `add` call carries `__agent44__correlation_id`, is denied by the delegation tier (`delegation:add:not_granted` because `add` is outside the granted `("echo",)` scope), and the downstream server is never invoked (`downstream_called: false`). The result is recorded as `GROUP_B_PROXY_NON_FORWARDING_VERIFIED=1`.
 
 ## Combined Results
 
@@ -132,3 +132,7 @@ The benchmark run produces the following artifacts in the output directory:
 ## Conclusion
 
 The Phase 8 benchmark is fully functional and deterministic. Baseline profile achieves 100% agreement with ground truth. Enforcement profile correctly fails closed (all calls blocked, zero false allows). All 15 Phase 7 extension scenarios pass at the engine level, confirming correct delegation and transfer behavior.
+
+### Phase 8 factual correction (applied at Phase 9 preflight)
+
+This report was generated at revision `facb438`, before commit `de5a97c` ("fix(benchmark): executed proxy non-forwarding integration case in Group B"). At `facb438` the Group B proxy-level downstream non-forwarding case was a registered placeholder (`GROUP_B_PROXY_NON_FORWARDING_VERIFIED=0`). At `de5a97c` the harness executes the live proxy subprocess for that case and the verified result is `GROUP_B_PROXY_NON_FORWARDING_VERIFIED=1` (delegation denial `delegation:add:not_granted`, `downstream_called: false`). The tables above have been corrected to reflect the actual post-fix result. No other metrics, artifacts, or historical claims were altered.
