@@ -1,0 +1,3 @@
+﻿?? .tmp_git.txt
+?? .tmp_pytest.txt
+?? .tmp_ruff.txt

@@ -613,6 +613,11 @@ def resolve_engine_case(case: ExtensionCase) -> dict:
 async def run_non_forwarding_integration_case(
     profile_dir: Path, delegation_grant: tuple[str, ...]
 ) -> dict:
+    import agent44.eval_runner as eval_runner
+    from agent44.proxy import CONTROL_CORRELATION_FIELD
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
     run_dir = profile_dir / "integration_run"
     run_dir.mkdir(parents=True, exist_ok=True)
     counter_path = run_dir / "counter.log"
@@ -637,7 +642,10 @@ async def run_non_forwarding_integration_case(
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            await session.call_tool("add", {"a": 1, "b": 2})
+            await session.call_tool(
+                "add",
+                {"a": 1, "b": 2, CONTROL_CORRELATION_FIELD: "integration-007"},
+            )
 
     decision: str | None = None
     for event in read_json(observe_path):
@@ -1092,13 +1100,18 @@ def _write_run_outputs(
         "output_dir": str(output_dir),
     }
     write_json(output_dir / "manifest.json", manifest)
-def _resolve_group_b(extensions: tuple[ExtensionCase, ...]) -> list[dict]:
+async def _resolve_group_b(
+    extensions: tuple[ExtensionCase, ...], profile_dir: Path
+) -> list[dict]:
     resolutions: list[dict] = []
     for case in extensions:
         if case.scope == "engine":
             resolutions.append(resolve_engine_case(case))
         else:
-            resolutions.append({"case": case.id, "scope": "proxy"})
+            result = await run_non_forwarding_integration_case(
+                profile_dir, ("echo",)
+            )
+            resolutions.append({"case": case.id, "scope": "proxy", **result})
     return resolutions
 
 
@@ -1132,8 +1145,10 @@ async def _run_group_a_profiles(
     return group_a_baselines, group_a_enforcements, g_a_baseline_summary, g_a_enforcement_summary
 
 
-def _run_group_b(extensions: tuple[ExtensionCase, ...]) -> tuple[list[dict], dict[str, Any], dict[str, Any]]:
-    resolutions = _resolve_group_b(extensions)
+async def _run_group_b(
+    extensions: tuple[ExtensionCase, ...], profile_dir: Path
+) -> tuple[list[dict], dict[str, Any], dict[str, Any]]:
+    resolutions = await _resolve_group_b(extensions, profile_dir)
     group_b = _group_b_metrics(extensions, resolutions)
     resolution_summary = {
         "group_b_engine_total": group_b["engine_cases"],
@@ -1157,7 +1172,9 @@ async def _execute(
     )
 
     extensions = tuple(EXTENSION_CASES)
-    resolutions, group_b, resolution_summary = _run_group_b(extensions)
+    resolutions, group_b, resolution_summary = await _run_group_b(
+        extensions, output_dir / "enforcement"
+    )
 
     g_a_baseline = _group_a_metrics(group_a_baselines, group_label="group_a_baseline")
     g_a_enforcement = _group_a_metrics(group_a_enforcements, group_label="group_a_enforcement")

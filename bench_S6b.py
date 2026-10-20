@@ -45,6 +45,11 @@
 async def run_non_forwarding_integration_case(
     profile_dir: Path, delegation_grant: tuple[str, ...]
 ) -> dict:
+    import agent44.eval_runner as eval_runner
+    from agent44.proxy import CONTROL_CORRELATION_FIELD
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
     run_dir = profile_dir / "integration_run"
     run_dir.mkdir(parents=True, exist_ok=True)
     counter_path = run_dir / "counter.log"
@@ -69,7 +74,10 @@ async def run_non_forwarding_integration_case(
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            await session.call_tool("add", {"a": 1, "b": 2})
+            await session.call_tool(
+                "add",
+                {"a": 1, "b": 2, CONTROL_CORRELATION_FIELD: "integration-007"},
+            )
 
     decision: str | None = None
     for event in read_json(observe_path):

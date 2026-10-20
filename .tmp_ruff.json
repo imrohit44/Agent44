@@ -1,0 +1,2494 @@
+﻿[
+  {
+    "cell": null,
+    "code": "UP020",
+    "end_location": {
+      "column": 43,
+      "row": 5
+    },
+    "filename": "D:\\Agent44\\assemble.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "open",
+          "end_location": {
+            "column": 19,
+            "row": 5
+          },
+          "location": {
+            "column": 12,
+            "row": 5
+          }
+        }
+      ],
+      "message": "Replace with builtin `open`"
+    },
+    "location": {
+      "column": 12,
+      "row": 5
+    },
+    "message": "Use builtin `open`",
+    "name": "open-alias",
+    "noqa_row": 5,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/open-alias"
+  },
+  {
+    "cell": null,
+    "code": "UP020",
+    "end_location": {
+      "column": 41,
+      "row": 9
+    },
+    "filename": "D:\\Agent44\\assemble.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "open",
+          "end_location": {
+            "column": 12,
+            "row": 9
+          },
+          "location": {
+            "column": 5,
+            "row": 9
+          }
+        }
+      ],
+      "message": "Replace with builtin `open`"
+    },
+    "location": {
+      "column": 5,
+      "row": 9
+    },
+    "message": "Use builtin `open`",
+    "name": "open-alias",
+    "noqa_row": 9,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/open-alias"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 2,
+      "row": 72
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from __future__ import annotations\r\n\r\nimport argparse\r\nimport asyncio\r\nimport hashlib\r\nimport json\r\nimport sys\r\nimport tempfile\r\nimport time\r\nfrom dataclasses import dataclass\r\nfrom datetime import datetime, timezone\r\nfrom pathlib import Path\r\nfrom typing import Any\r\n\r\nfrom agent44 import corpus as corpus_module\r\nfrom agent44.corpus import CORPUS_VERSION, VALID_EXPECTED, VALID_LABELS\r\nfrom agent44.delegation import (\r\n    DelegationConfig,\r\n    DelegationContext,\r\n    DelegationSource,\r\n    DelegationStatus,\r\n    DelegationValidationError,\r\n    Principal,\r\n    parse_delegation_manifest,\r\n)\r\nfrom agent44.policy import PolicyEngine\r\nfrom agent44.transfer import (\r\n    ProvenanceRegistry,\r\n    ProvenanceTransferStore,\r\n    TransferConfig,\r\n    TransferError,\r\n    TrustClass,\r\n)\r\n\r\n",
+          "end_location": {
+            "column": 1,
+            "row": 74
+          },
+          "location": {
+            "column": 1,
+            "row": 40
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 1,
+      "row": 40
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "name": "unsorted-imports",
+    "noqa_row": 40,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 16,
+      "row": 42
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 43
+          },
+          "location": {
+            "column": 1,
+            "row": 42
+          }
+        }
+      ],
+      "message": "Remove unused import: `argparse`"
+    },
+    "location": {
+      "column": 8,
+      "row": 42
+    },
+    "message": "`argparse` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 42,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 15,
+      "row": 43
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 44
+          },
+          "location": {
+            "column": 1,
+            "row": 43
+          }
+        }
+      ],
+      "message": "Remove unused import: `asyncio`"
+    },
+    "location": {
+      "column": 8,
+      "row": 43
+    },
+    "message": "`asyncio` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 43,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 11,
+      "row": 46
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 47
+          },
+          "location": {
+            "column": 1,
+            "row": 46
+          }
+        }
+      ],
+      "message": "Remove unused import: `sys`"
+    },
+    "location": {
+      "column": 8,
+      "row": 46
+    },
+    "message": "`sys` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 46,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 16,
+      "row": 47
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 48
+          },
+          "location": {
+            "column": 1,
+            "row": 47
+          }
+        }
+      ],
+      "message": "Remove unused import: `tempfile`"
+    },
+    "location": {
+      "column": 8,
+      "row": 47
+    },
+    "message": "`tempfile` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 47,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 12,
+      "row": 48
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 49
+          },
+          "location": {
+            "column": 1,
+            "row": 48
+          }
+        }
+      ],
+      "message": "Remove unused import: `time`"
+    },
+    "location": {
+      "column": 8,
+      "row": 48
+    },
+    "message": "`time` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 48,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 34,
+      "row": 49
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 50
+          },
+          "location": {
+            "column": 1,
+            "row": 49
+          }
+        }
+      ],
+      "message": "Remove unused import: `dataclasses.dataclass`"
+    },
+    "location": {
+      "column": 25,
+      "row": 49
+    },
+    "message": "`dataclasses.dataclass` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 49,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 44,
+      "row": 54
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 55
+          },
+          "location": {
+            "column": 1,
+            "row": 54
+          }
+        }
+      ],
+      "message": "Remove unused import: `agent44.corpus`"
+    },
+    "location": {
+      "column": 31,
+      "row": 54
+    },
+    "message": "`agent44.corpus` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 54,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 42,
+      "row": 55
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 56
+          },
+          "location": {
+            "column": 1,
+            "row": 55
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 28,
+      "row": 55
+    },
+    "message": "`agent44.corpus.CORPUS_VERSION` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 55,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 58,
+      "row": 55
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 56
+          },
+          "location": {
+            "column": 1,
+            "row": 55
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 44,
+      "row": 55
+    },
+    "message": "`agent44.corpus.VALID_EXPECTED` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 55,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 72,
+      "row": 55
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 56
+          },
+          "location": {
+            "column": 1,
+            "row": 55
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 60,
+      "row": 55
+    },
+    "message": "`agent44.corpus.VALID_LABELS` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 55,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 40,
+      "row": 56
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 57
+          },
+          "location": {
+            "column": 1,
+            "row": 56
+          }
+        }
+      ],
+      "message": "Remove unused import: `agent44.policy.PolicyEngine`"
+    },
+    "location": {
+      "column": 28,
+      "row": 56
+    },
+    "message": "`agent44.policy.PolicyEngine` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 56,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 21,
+      "row": 58
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 66
+          },
+          "location": {
+            "column": 1,
+            "row": 57
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 58
+    },
+    "message": "`agent44.delegation.DelegationConfig` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 58,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 22,
+      "row": 59
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 66
+          },
+          "location": {
+            "column": 1,
+            "row": 57
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 59
+    },
+    "message": "`agent44.delegation.DelegationContext` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 59,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 21,
+      "row": 60
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 66
+          },
+          "location": {
+            "column": 1,
+            "row": 57
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 60
+    },
+    "message": "`agent44.delegation.DelegationStatus` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 60,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 30,
+      "row": 61
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 66
+          },
+          "location": {
+            "column": 1,
+            "row": 57
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 61
+    },
+    "message": "`agent44.delegation.DelegationValidationError` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 61,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 21,
+      "row": 62
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 66
+          },
+          "location": {
+            "column": 1,
+            "row": 57
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 62
+    },
+    "message": "`agent44.delegation.DelegationSource` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 62,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 14,
+      "row": 63
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 66
+          },
+          "location": {
+            "column": 1,
+            "row": 57
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 63
+    },
+    "message": "`agent44.delegation.Principal` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 63,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 30,
+      "row": 64
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 66
+          },
+          "location": {
+            "column": 1,
+            "row": 57
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 64
+    },
+    "message": "`agent44.delegation.parse_delegation_manifest` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 64,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 23,
+      "row": 67
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 73
+          },
+          "location": {
+            "column": 1,
+            "row": 66
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 67
+    },
+    "message": "`agent44.transfer.ProvenanceRegistry` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 67,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 28,
+      "row": 68
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 73
+          },
+          "location": {
+            "column": 1,
+            "row": 66
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 68
+    },
+    "message": "`agent44.transfer.ProvenanceTransferStore` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 68,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 19,
+      "row": 69
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 73
+          },
+          "location": {
+            "column": 1,
+            "row": 66
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 69
+    },
+    "message": "`agent44.transfer.TransferConfig` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 69,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 18,
+      "row": 70
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 73
+          },
+          "location": {
+            "column": 1,
+            "row": 66
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 70
+    },
+    "message": "`agent44.transfer.TransferError` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 70,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 15,
+      "row": 71
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 73
+          },
+          "location": {
+            "column": 1,
+            "row": 66
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 71
+    },
+    "message": "`agent44.transfer.TrustClass` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 71,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "UP017",
+    "end_location": {
+      "column": 37,
+      "row": 95
+    },
+    "filename": "D:\\Agent44\\bench_S1.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from datetime import datetime, timezone, UTC",
+          "end_location": {
+            "column": 40,
+            "row": 50
+          },
+          "location": {
+            "column": 1,
+            "row": 50
+          }
+        },
+        {
+          "content": "UTC",
+          "end_location": {
+            "column": 37,
+            "row": 95
+          },
+          "location": {
+            "column": 25,
+            "row": 95
+          }
+        }
+      ],
+      "message": "Convert to `datetime.UTC` alias"
+    },
+    "location": {
+      "column": 25,
+      "row": 95
+    },
+    "message": "Use `datetime.UTC` alias",
+    "name": "datetime-timezone-utc",
+    "noqa_row": 95,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/datetime-timezone-utc"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 2,
+      "row": 72
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from __future__ import annotations\r\n\r\nimport argparse\r\nimport asyncio\r\nimport hashlib\r\nimport json\r\nimport sys\r\nimport tempfile\r\nimport time\r\nfrom dataclasses import dataclass\r\nfrom datetime import datetime, timezone\r\nfrom pathlib import Path\r\nfrom typing import Any\r\n\r\nfrom agent44 import corpus as corpus_module\r\nfrom agent44.corpus import CORPUS_VERSION, VALID_EXPECTED, VALID_LABELS\r\nfrom agent44.delegation import (\r\n    DelegationConfig,\r\n    DelegationContext,\r\n    DelegationSource,\r\n    DelegationStatus,\r\n    DelegationValidationError,\r\n    Principal,\r\n    parse_delegation_manifest,\r\n)\r\nfrom agent44.policy import PolicyEngine\r\nfrom agent44.transfer import (\r\n    ProvenanceRegistry,\r\n    ProvenanceTransferStore,\r\n    TransferConfig,\r\n    TransferError,\r\n    TrustClass,\r\n)\r\n\r\n",
+          "end_location": {
+            "column": 1,
+            "row": 74
+          },
+          "location": {
+            "column": 1,
+            "row": 40
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 1,
+      "row": 40
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "name": "unsorted-imports",
+    "noqa_row": 40,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 58,
+      "row": 55
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from agent44.corpus import CORPUS_VERSION",
+          "end_location": {
+            "column": 72,
+            "row": 55
+          },
+          "location": {
+            "column": 1,
+            "row": 55
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 44,
+      "row": 55
+    },
+    "message": "`agent44.corpus.VALID_EXPECTED` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 55,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 72,
+      "row": 55
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from agent44.corpus import CORPUS_VERSION",
+          "end_location": {
+            "column": 72,
+            "row": 55
+          },
+          "location": {
+            "column": 1,
+            "row": 55
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 60,
+      "row": 55
+    },
+    "message": "`agent44.corpus.VALID_LABELS` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 55,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 21,
+      "row": 58
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from agent44.delegation import (\r\n    DelegationContext,\r\n    DelegationStatus,\r\n    DelegationValidationError,\r\n    Principal,\r\n    parse_delegation_manifest,\r\n)",
+          "end_location": {
+            "column": 2,
+            "row": 65
+          },
+          "location": {
+            "column": 1,
+            "row": 57
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 58
+    },
+    "message": "`agent44.delegation.DelegationConfig` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 58,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 21,
+      "row": 62
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from agent44.delegation import (\r\n    DelegationContext,\r\n    DelegationStatus,\r\n    DelegationValidationError,\r\n    Principal,\r\n    parse_delegation_manifest,\r\n)",
+          "end_location": {
+            "column": 2,
+            "row": 65
+          },
+          "location": {
+            "column": 1,
+            "row": 57
+          }
+        }
+      ],
+      "message": "Remove unused import"
+    },
+    "location": {
+      "column": 5,
+      "row": 62
+    },
+    "message": "`agent44.delegation.DelegationSource` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 62,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "UP017",
+    "end_location": {
+      "column": 37,
+      "row": 95
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from datetime import datetime, timezone, UTC",
+          "end_location": {
+            "column": 40,
+            "row": 50
+          },
+          "location": {
+            "column": 1,
+            "row": 50
+          }
+        },
+        {
+          "content": "UTC",
+          "end_location": {
+            "column": 37,
+            "row": 95
+          },
+          "location": {
+            "column": 25,
+            "row": 95
+          }
+        }
+      ],
+      "message": "Convert to `datetime.UTC` alias"
+    },
+    "location": {
+      "column": 25,
+      "row": 95
+    },
+    "message": "Use `datetime.UTC` alias",
+    "name": "datetime-timezone-utc",
+    "noqa_row": 95,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/datetime-timezone-utc"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 104,
+      "row": 181
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 181
+    },
+    "message": "Line too long (103 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 181,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 117,
+      "row": 358
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 358
+    },
+    "message": "Line too long (116 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 358,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 116,
+      "row": 398
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 398
+    },
+    "message": "Line too long (115 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 398,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 110,
+      "row": 419
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 419
+    },
+    "message": "Line too long (109 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 419,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 46,
+      "row": 455
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "    import asyncio\r\n\r\n    from mcp import ClientSession, StdioServerParameters\r\n    from mcp.client.stdio import stdio_client\r\n\r\n    import agent44.eval_runner as eval_runner\r\n",
+          "end_location": {
+            "column": 1,
+            "row": 456
+          },
+          "location": {
+            "column": 1,
+            "row": 451
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 5,
+      "row": 451
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "name": "unsorted-imports",
+    "noqa_row": 451,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 19,
+      "row": 451
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 452
+          },
+          "location": {
+            "column": 1,
+            "row": 451
+          }
+        }
+      ],
+      "message": "Remove unused import: `asyncio`"
+    },
+    "location": {
+      "column": 12,
+      "row": 451
+    },
+    "message": "`asyncio` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 451,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 164,
+      "row": 501
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 501
+    },
+    "message": "Line too long (163 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 501,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 167,
+      "row": 513
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 513
+    },
+    "message": "Line too long (166 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 513,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 222,
+      "row": 526
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 526
+    },
+    "message": "Line too long (221 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 526,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 168,
+      "row": 538
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 538
+    },
+    "message": "Line too long (167 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 538,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 168,
+      "row": 551
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 551
+    },
+    "message": "Line too long (167 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 551,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 114,
+      "row": 563
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 563
+    },
+    "message": "Line too long (113 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 563,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 103,
+      "row": 565
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 565
+    },
+    "message": "Line too long (102 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 565,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 168,
+      "row": 568
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 568
+    },
+    "message": "Line too long (167 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 568,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 168,
+      "row": 571
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 571
+    },
+    "message": "Line too long (167 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 571,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 114,
+      "row": 584
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 584
+    },
+    "message": "Line too long (113 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 584,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 103,
+      "row": 586
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 586
+    },
+    "message": "Line too long (102 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 586,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 125,
+      "row": 589
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 589
+    },
+    "message": "Line too long (124 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 589,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 129,
+      "row": 592
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 592
+    },
+    "message": "Line too long (128 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 592,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 129,
+      "row": 595
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 595
+    },
+    "message": "Line too long (128 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 595,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 129,
+      "row": 598
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 598
+    },
+    "message": "Line too long (128 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 598,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 129,
+      "row": 601
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 601
+    },
+    "message": "Line too long (128 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 601,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 129,
+      "row": 604
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 604
+    },
+    "message": "Line too long (128 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 604,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 109,
+      "row": 621
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 621
+    },
+    "message": "Line too long (108 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 621,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 21,
+      "row": 625
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 10,
+      "row": 625
+    },
+    "message": "Undefined name `eval_runner`",
+    "name": "undefined-name",
+    "noqa_row": 625,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 21,
+      "row": 634
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 10,
+      "row": 634
+    },
+    "message": "Undefined name `eval_runner`",
+    "name": "undefined-name",
+    "noqa_row": 634,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 35,
+      "row": 636
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 14,
+      "row": 636
+    },
+    "message": "Undefined name `StdioServerParameters`",
+    "name": "undefined-name",
+    "noqa_row": 636,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 28,
+      "row": 637
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 16,
+      "row": 637
+    },
+    "message": "Undefined name `stdio_client`",
+    "name": "undefined-name",
+    "noqa_row": 637,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "F821",
+    "end_location": {
+      "column": 33,
+      "row": 638
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 20,
+      "row": 638
+    },
+    "message": "Undefined name `ClientSession`",
+    "name": "undefined-name",
+    "noqa_row": 638,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/undefined-name"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 163,
+      "row": 653
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 653
+    },
+    "message": "Line too long (162 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 653,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 106,
+      "row": 892
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 892
+    },
+    "message": "Line too long (105 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 892,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 107,
+      "row": 893
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 893
+    },
+    "message": "Line too long (106 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 893,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 113,
+      "row": 929
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 929
+    },
+    "message": "Line too long (112 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 929,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 104,
+      "row": 933
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 933
+    },
+    "message": "Line too long (103 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 933,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 117,
+      "row": 959
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 959
+    },
+    "message": "Line too long (116 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 959,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 104,
+      "row": 1052
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1052
+    },
+    "message": "Line too long (103 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1052,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 113,
+      "row": 1057
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1057
+    },
+    "message": "Line too long (112 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1057,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 116,
+      "row": 1064
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1064
+    },
+    "message": "Line too long (115 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1064,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 122,
+      "row": 1065
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1065
+    },
+    "message": "Line too long (121 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1065,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 107,
+      "row": 1118
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1118
+    },
+    "message": "Line too long (106 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1118,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 110,
+      "row": 1135
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1135
+    },
+    "message": "Line too long (109 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1135,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 122,
+      "row": 1155
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1155
+    },
+    "message": "Line too long (121 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1155,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 166,
+      "row": 1182
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1182
+    },
+    "message": "Line too long (165 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1182,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 178,
+      "row": 1183
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1183
+    },
+    "message": "Line too long (177 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1183,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 120,
+      "row": 1233
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1233
+    },
+    "message": "Line too long (119 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1233,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 129,
+      "row": 1234
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1234
+    },
+    "message": "Line too long (128 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1234,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 139,
+      "row": 1235
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1235
+    },
+    "message": "Line too long (138 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1235,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 106,
+      "row": 1236
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1236
+    },
+    "message": "Line too long (105 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1236,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 137,
+      "row": 1237
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1237
+    },
+    "message": "Line too long (136 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1237,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 122,
+      "row": 1238
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1238
+    },
+    "message": "Line too long (121 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1238,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 119,
+      "row": 1248
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1248
+    },
+    "message": "Line too long (118 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1248,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 133,
+      "row": 1259
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1259
+    },
+    "message": "Line too long (132 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1259,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 105,
+      "row": 1261
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1261
+    },
+    "message": "Line too long (104 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1261,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "UP031",
+    "end_location": {
+      "column": 89,
+      "row": 1266
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "\"{:.4f}\".format(summary[\"profiles\"][\"baseline\"][\"agreement\"])",
+          "end_location": {
+            "column": 89,
+            "row": 1266
+          },
+          "location": {
+            "column": 36,
+            "row": 1266
+          }
+        }
+      ],
+      "message": "Replace with format specifiers"
+    },
+    "location": {
+      "column": 36,
+      "row": 1266
+    },
+    "message": "Use format specifiers instead of percent format",
+    "name": "printf-string-formatting",
+    "noqa_row": 1266,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/printf-string-formatting"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 108,
+      "row": 1266
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1266
+    },
+    "message": "Line too long (107 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1266,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 106,
+      "row": 1267
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1267
+    },
+    "message": "Line too long (105 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1267,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "UP031",
+    "end_location": {
+      "column": 95,
+      "row": 1268
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "\"{:.4f}\".format(summary[\"profiles\"][\"enforcement\"][\"agreement\"])",
+          "end_location": {
+            "column": 95,
+            "row": 1268
+          },
+          "location": {
+            "column": 39,
+            "row": 1268
+          }
+        }
+      ],
+      "message": "Replace with format specifiers"
+    },
+    "location": {
+      "column": 39,
+      "row": 1268
+    },
+    "message": "Use format specifiers instead of percent format",
+    "name": "printf-string-formatting",
+    "noqa_row": 1268,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/printf-string-formatting"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 114,
+      "row": 1268
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1268
+    },
+    "message": "Line too long (113 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1268,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 128,
+      "row": 1270
+    },
+    "filename": "D:\\Agent44\\src\\agent44\\benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 1270
+    },
+    "message": "Line too long (127 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 1270,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "F841",
+    "end_location": {
+      "column": 10,
+      "row": 62
+    },
+    "filename": "D:\\Agent44\\tests\\test_benchmark.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 13,
+            "row": 62
+          },
+          "location": {
+            "column": 5,
+            "row": 62
+          }
+        }
+      ],
+      "message": "Remove assignment to unused variable `first`"
+    },
+    "location": {
+      "column": 5,
+      "row": 62
+    },
+    "message": "Local variable `first` is assigned to but never used",
+    "name": "unused-variable",
+    "noqa_row": 62,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-variable"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 107,
+      "row": 74
+    },
+    "filename": "D:\\Agent44\\tests\\test_benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 74
+    },
+    "message": "Line too long (106 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 74,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 104,
+      "row": 101
+    },
+    "filename": "D:\\Agent44\\tests\\test_benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 101
+    },
+    "message": "Line too long (103 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 101,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 129,
+      "row": 103
+    },
+    "filename": "D:\\Agent44\\tests\\test_benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 103
+    },
+    "message": "Line too long (128 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 103,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 105,
+      "row": 178
+    },
+    "filename": "D:\\Agent44\\tests\\test_benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 178
+    },
+    "message": "Line too long (104 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 178,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  },
+  {
+    "cell": null,
+    "code": "E501",
+    "end_location": {
+      "column": 105,
+      "row": 186
+    },
+    "filename": "D:\\Agent44\\tests\\test_benchmark.py",
+    "fix": null,
+    "location": {
+      "column": 101,
+      "row": 186
+    },
+    "message": "Line too long (104 > 100)",
+    "name": "line-too-long",
+    "noqa_row": 186,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/line-too-long"
+  }
+]
