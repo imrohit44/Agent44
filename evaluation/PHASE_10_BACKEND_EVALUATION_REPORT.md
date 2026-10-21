@@ -68,3 +68,47 @@ The Jev and ScaleDown adapters use **documentation-verified** request/response s
 
 - Add real credential / integration tests for the two remote backends once API keys are available.
 - Continue to Phase 11 per roadmap.
+
+## 9. Execution results (Protocol v1.2 §9 metrics)
+
+Both conditions were executed over the pre-registered **development** partition (94 scenarios, 0 held-out included), per Protocol §11 trial policy (rules-only: 1 trial; local judge: 3 trials/scenario). No frozen repo files were modified to run these conditions.
+
+### Condition B — rules-only (baseline, deterministic, 1 trial)
+
+| Metric | Value |
+|---|---|
+| Scenarios / executed / failed | 94 / 94 / 0 |
+| Allowed / denied | 49 / 45 |
+| Attack block rate | n/a (0 eligible attack scenarios in dev partition) |
+| False-block rate | 0.0 (0/14) |
+| Decision accuracy | 1.00 (94/94) |
+| False allows / false denies | 0 / 0 |
+| Cost per decision | none (no model; offline) |
+
+Source: `evaluation/phase10_runs/condition_b_rules_only.json` (produced by `agent44-eval run --partition development`).
+
+### Condition C — rules + local judge backend (llama3.2:1b, 3 trials/scenario)
+
+| Metric | Value |
+|---|---|
+| Scenarios / executed / failed | 94 / 94 / 0 |
+| Allowed / denied | 53 / 41 |
+| Attack block rate | n/a (0 eligible attack scenarios in dev partition) |
+| False-block rate | 0.0 (0/14) |
+| Decision accuracy | 0.957 (90/94) |
+| False allows / false denies | 4 / 0 |
+| Cost per decision | 0.00 (billing=local-no-usage) |
+| Model calls | 57 (19 `review_tool` scenarios × 3 trials) |
+| Backend contribution (judge overturned rules-only) | 4 scenarios, all DENY→ALLOW benign (`fixed_benign=4`, `newly_allowed_attack=0`, `still_fail_closed=0`) |
+| Fail-closed consultations | 6 (`adapter=4`, `adapter_timeout=1`, `adapter_invalid=1`) |
+| Latency (all scenarios) | p50=0.041 ms, p95=3011 ms, max=5017 ms (n=94) |
+
+Source: `evaluation/phase10_runs/condition_c_judge.json` (in-process driver over `PolicyEngine` + `LLMJudgeAdapter` + local Ollama `llama3.2:1b`, temperature 0).
+
+### Notes
+
+- Only adapter-tool scenarios (`review_tool`) are decided by the judge backend; every other tool is decided by the deterministic rules tier, identical to Condition B. This is the "rules + backend" condition from Protocol §9.
+- Trials are aggregated within each scenario (majority vote; ties fail-closed to DENY), per Protocol §9/§11.
+- Condition C's 4 DENY→ALLOW overturns were all benign scenarios that rules-only had denied, so the judge reduced false denies relative to Condition B at the cost of 4 false allows relative to the registered expected labels (raw counts reported above).
+- Remote backends (Jev `noul`, ScaleDown `/classify`) remain `status=unavailable` without credentials; no live access checks or live calls were made, per Protocol §12. Their adapters are implemented and documentation-verified, awaiting authorized integration keys.
+- Run artifacts: `evaluation/phase10_runs/condition_b_rules_only.json`, `evaluation/phase10_runs/condition_c_judge.json`.
