@@ -855,5 +855,38 @@ E501 Line too long (104 > 100)
 188 |     bad.write_text(json.dumps({"ids": held_ids}), encoding="utf-8")
     |
 
-Found 66 errors.
-[*] 9 fixable with `--fix` (3 unsafe fixes available with `--fix --unsafe-fixes`).
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests\test_remote_backends.py:4:1
+   |
+ 2 |   """Regression tests for agent44.remote_backends (Phase 10)."""
+ 3 |
+ 4 | / from __future__ import annotations
+ 5 | |
+ 6 | | import pytest
+ 7 | |
+ 8 | | from agent44.policy import Action, Condition, PolicyRule
+ 9 | | from agent44.remote_backends import (
+10 | |     JevAdapter,
+11 | |     RemoteResponseError,
+12 | |     ScaleDownClassifyAdapter,
+13 | |     BackendUnavailableError,
+14 | |     BackendStatus,
+15 | |     _parse_noul_probability,
+16 | |     _parse_scaledown_scores,
+17 | | )
+   | |_^
+help: Organize imports
+   |
+9  | from agent44.remote_backends import (
+10 +     BackendStatus,
+11 +     BackendUnavailableError,
+12 |     JevAdapter,
+13 |     RemoteResponseError,
+14 |     ScaleDownClassifyAdapter,
+   -     BackendUnavailableError,
+   -     BackendStatus,
+15 |     _parse_noul_probability,
+   |
+
+Found 67 errors.
+[*] 10 fixable with `--fix` (3 unsafe fixes available with `--fix --unsafe-fixes`).
