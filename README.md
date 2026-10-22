@@ -27,9 +27,13 @@ downstream tool execution, a deterministic policy engine evaluates the call:
 2. **Deterministic rule evaluation** – YAML-declared ALLOW/DENY rules are matched
    using exact field equality and field_exists predicates. Hard-deny lists take
    absolute precedence.
-3. **Adapter consultation** – if all deterministic tiers return UNDECIDED, a
-   configurable decision adapter (e.g. a probability-threshold model-backed
-   backend) may be consulted.
+3. **Adapter consultation** -- if the deterministic policy engine returns
+   UNDECIDED for a tool that is listed in ``adapter_tools``, a configurable
+   decision adapter may be consulted. Only tool names explicitly listed in
+   ``adapter_tools`` in the policy are eligible for adapter consultation. An
+   adapter ALLOW cannot override a deterministic DENY or hard-deny decision.
+    
+   
 4. **Fail-closed** – any adapter timeout, error, or invalid output maps to a
    distinct DENY rule-id; no adapter output can override a deterministic DENY.
 
@@ -61,7 +65,7 @@ flowchart TD
   distinct rule-id bucket.
 ## Security model and trust boundaries
 
-- **Deterministic tiers are trusted.** Hard-deny lists and declared DENY rules
+- **Deterministic tiers are authoritative.** Hard-deny lists and declared DENY rules
   are evaluated first and cannot be overridden by an adapter.
 - **Adapters are untrusted.** The threshold adapter, LLM judge, or any remote
   backend can time out, return malformed output, or return UNDECIDED. Every
@@ -71,6 +75,11 @@ flowchart TD
   never persisted; observations record only safe metadata (type/length summaries).
 - **Fail-closed decisions may reduce availability.** Denials block calls that
   might otherwise succeed, but this is intentional — the system never silently
+  permits a call that a tier cannot decisively authorize.
+- **A denied tool call does not prove end-to-end attack prevention.** Agent44
+  evaluates individual tool calls in isolation; it does not secure an entire agent
+  application against multi-step objectives.
+  permits a call that a tier cannot decisively authorize.therwise succeed, but this is intentional — the system never silently
   permits a call that a tier cannot decisively authorize.
 ## Current capabilities
 
@@ -230,13 +239,73 @@ generalizable beyond the development corpus.
 - Tool-call blocking is not proof of end-to-end attack prevention.
 - A passing test suite is not proof of production-grade security.
 - Cost and latency claims apply only to the measured configuration.
+- Held-out evaluation has not yet been authorized or performed.
+- The local judge uses a versioned, fixed prompt and a strict JSON parser; its
+  behavior with different models or temperatures is untested.
+- Remote backends (Jev `noul`, ScaleDown `/classify`) remain `status=unavailable`
+  without confirmed API keys; no live access checks or live calls were made.
+
+## Evaluation results
+
+The development corpus contains 94 scenarios. Results are reported at the
+per-scenario level, collapsing repeated trials to one outcome per scenario.
+
+### Condition B — rules only (deterministic policy engine, no adapter)
+
+- **94/94 scenarios resolved** — every scenario has a definitive ALLOW or DENY
+  outcome from the deterministic policy.
+- **0 false allows** — 0 scenarios where the policy returned ALLOW but the
+  expected label was DENY.
+- **0 false denies** — 0 scenarios where the policy returned DENY but the
+  expected label was ALLOW.
+- **Decision accuracy: 1.000 (94/94)**. Denominator: 94 distinct scenarios.
+
+The source data is `evaluation/phase10_runs/condition_b_rules_only.json`.
+
+### Condition C — rules + local judge (deterministic policy + LLM judge adapter)
+
+- **94/94 scenarios resolved** — every scenario has a definitive outcome.
+- **90/94 correct decisions** — 90 scenarios where the final decision (deterministic
+  policy + judge when consulted) matched the expected label.
+- **4 false allows** — 4 scenarios where the deterministic policy returned DENY (or
+  UNDECIDED) and the judge returned ALLOW, resulting in a decision that expected DENY.
+  These scenarios included: ambiguous-adversarial (label ambiguous), adapter-failure
+  (label invalid), adapter-eligible (label ambiguous), and prompt-injection (label
+  malicious, `pi-review-injection-persuade-01`).
+- **0 false denies** — 0 scenarios where the final decision incorrectly denied a
+  scenario expected to be allowed.
+- **Decision accuracy: 0.957 (90/94)**. Denominator: 94 distinct scenarios.
+
+**Model call volume:** The judge was consulted on 6 `review_tool` scenarios (where
+deterministic policy returned UNDECIDED), each with 3 trials aggregated by majority
+vote. Total model calls: 6 × 3 = 18. Of the 19 `review_tool` scenarios in the
+corpus, 13 were decided by deterministic rules alone (with specific rule IDs such
+as `hard-review-eval`, `deny-inject-*`, `adapter-grant-ok`) and `adapter=None`;
+the judge was not consulted for these.
+
+**Backend contribution:** The judge overturned the rules-only decision in 4 scenarios,
+all of which were cases where the deterministic policy had returned UNDECIDED and
+the judge returned ALLOW. All 4 are false allows relative to the expected DENY
+label. No scenario had the judge override a deterministic ALLOW or a hard-deny.
+
+**Latency:** p50=0.041 ms, p95=3011 ms, max=5017 ms (n=94, all scenarios). Model
+inference latency is included only for the 6 consulted scenarios; the rules-only
+path has effectively zero additional latency.
+
+The source data is `evaluation/phase10_runs/condition_c_judge.json`.
+
 **Important caveats:**
 
-- Scenarios are synthetic and development results do not establish generalization.
+- The corpus is synthetic and used for development only; results do not establish
+  generalization.
 - Tool-call blocking is not proof of end-to-end attack prevention.
 - A passing test suite is not proof of production-grade security.
 - Cost and latency claims apply only to the measured configuration.
 - Held-out evaluation has not yet been authorized or performed.
+- The local judge uses a versioned, fixed prompt and a strict JSON parser; its
+  behavior with different models or temperatures is untested.
+- Remote backends (Jev `noul`, ScaleDown `/classify`) remain `status=unavailable`
+  without confirmed API keys; no live access checks or live calls were made.
 
 ## Limitations and threat model
 
@@ -251,8 +320,9 @@ generalizable beyond the development corpus.
   can leave gaps.
 - Fail-closed decisions reduce availability: some calls that could be safe are
   blocked because no tier could decisively authorize them.
-- External tool content (both arguments and results) is treated as untrusted;
-  ## Security reporting
+- External tool content (both arguments and results) is treated as untrusted.
+
+## Security reporting
 
 This project is an experimental security research implementation. If you
 discover a vulnerability, **do not** disclose it in a public issue tracker.
