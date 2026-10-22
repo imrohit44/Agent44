@@ -55,7 +55,7 @@ flowchart TD
     style HardDeny fill:#ffdddd,stroke:#cc0000
     style DenyRule fill:#ffe5e5,stroke:#cc4444
     style Allow fill:#e6ffec,stroke:#44aa55
-    style Undecided fill:#fff4c4,stroke:#aaaa22]
+    style Undecided fill:#fff4c4,stroke:#aaaa22
 ```
 
 **Key boundaries:**
