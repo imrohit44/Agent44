@@ -1,3 +1,11 @@
+
+- **Unresolved thresholds:** Decision accuracy and rate thresholds to be determined by reviewer adjudication; not invented here.
+- **Reviewer arrangements:** Pending assignment of reviewers; coordinate with evaluation lead.
+- **Adjudication details:** Disputes to be resolved by senior evaluation engineer; rationale documented per protocol §12.
+- **Storage/access controls:** Proposal stored in evaluation/ directory; access restricted to evaluation team; no public disclosure without authorization.
+- **Reproducibility requirements:** Pilot data (condition_b_rules_only.json, condition_c_judge.json) provided for reproducibility; held-out corpus not yet created.
+- **Protocol approval:** Not marked complete; awaiting reviewer sign-off per CONFIGURATION_FREEZE_v1.md.
+- **Evaluation authorization:** Not granted; pending held-out corpus deployment and appropriate review.
 # Agent44 — Metrics and Sample-Size Proposal v1
 
 ## Purpose and scope
@@ -16,18 +24,17 @@ No existing documents are modified. No held-out corpus, labels, or evaluations a
 |---|---|
 | CONFIGURATION_FREEZE_v1.md | Policy file `policy_eval_4a.yaml`, `default_deny: true`, hard_deny_tools, delegation, provenance, argument constraints, UNDECIDED delegates to adapter if tool ∈ adapter_tools `[review_tool]`. Fail-closed: adapter_timeout/error/invalid/undecided/missing → DENY. Judge: `llama3.2:1b`, `judge-prompt-v1`, temperature 0, output schema `{"action": "ALLOW"|"DENY"|"UNDECIDED", "reason": string, "confidence": number 0-1}`. |
 | HOLDOUT_DATASET_PLAN_v1.md | Ground-truth labelling rubric: `ALLOW` = permitted, `DENY` = blocked. Categories: `benign-basic`, `benign`, `ambiguous-adversarial`, `ambiguous-legitimate`, `prompt-injection`, `policy-bypass`, `conflicting-rules`, `adapter-eligible`, `hard-deny`. `adapter-eligible` = rules return UNDECIDED + tool is `review_tool`. Dispute resolution references decision contract. |
-| PROTOCOL_v1.3_AMENDMENT.md | Two-layer design: Layer A (policy-engine decision quality) then Layer B (full proxy enforcement). Layer A must precede Layer B; Layer B is separately measured, not an inference from Layer A. Metrics with Wilson intervals, 50-scenario planning target (caveat: not statistically powered). Decision accuracy = (correct) / (total) with Wilson 95% CI using scenario counts as denominator. UNDECIDED excluded from decision-accuracy/false-allow/false-deny rates. |
-| PHASE_10_BACKEND_EVALUATION_REPORT.md | Pilot over 94 development scenarios: Condition A (rules-only) 94/94 correct; Condition C (rules+judge) 90/94 decision accuracy, 4/94 false allows. 6 scenarios reached the adapter × 3 trials = 18 model calls. Majority-vote tie→DENY. Backend failures: adapter_timeout=1, adapter_invalid=1. Decision source: only adapter-tool scenarios (`review_tool`) can be decided by the judge; all other tools decided by deterministic rules. Latency p50=0.041 ms p95=3011 ms max=5017 ms (n=94). |
-| Development-corpus pilot results (implicit in above) | 94 development scenarios v4c.0.0. 6 scenarios consulted the judge (all `review_tool` where rules returned UNDECIDED). 3 trials per consulted scenario = 18 model calls. No retries implemented. Fail-closed: adapter failures → DENY. |
+| PROTOCOL_v1.3_AMENDMENT.md | Two-layer design: Layer A (policy-engine decision quality) then Layer B (full proxy enforcement). Layer A must precede Layer B; Layer B is separately measured, not an inference from Layer A. Metrics with Wilson intervals, 50-scenario exploratory planning target (caveat: not statistically powered; a defensible sample-size rationale requires explicit assumptions about expected event rate, desired confidence-interval precision, or minimum effect size). Decision accuracy = (correct) / (total) with Wilson 95% CI using scenario counts as denominator. UNDECIDED excluded from decision-accuracy/false-allow/false-deny rates. |
+| PHASE_10_BACKEND_EVALUATION_REPORT.md | Pilot over 94 development scenarios: Condition A (rules-only) 94/94 correct; Condition C (rules+judge) 90/94 correct decisions ≈95.74% decision accuracy, with 4 false allows. False-allow rate documented as 4/45 ≈8.89% (4 false allows / 45 expected-DENY scenarios), not 4/94. 6 scenarios reached the adapter × 3 trials = 18 model calls. Majority-vote tie→DENY. Backend failures: adapter_timeout=1, adapter_invalid=1. Decision source: only adapter-tool scenarios (`review_tool`) can be decided by the judge; all other tools decided by deterministic rules. Latency p50=0.041 ms p95=3011 ms max=5017 ms (n=94). |
+| Development-corpus pilot results (implicit in above) | 94 development scenarios v4c.0.0. 6 scenarios consulted the judge (all `review_tool` where rules returned UNDECIDED). 3 trials per consulted scenario = 18 model calls. No retries implemented. Fail-closed: adapter failures → DENY. False-allow rate = 4/45 ≈ 8.89% (4 false allows / 45 expected-DENY scenarios), not 4/94. |
 ## Layer A metric definitions
 
 For each metric: numerator, denominator, level of analysis (scenario vs trial), desirability direction, UNDECIDED treatment, failed-execution treatment, limitations.
 
-### 1. Decision accuracy
+### 1. Decision accuracy (continued)
 
-- **Definition:** proportion of scenarios where the observed final decision matches the expected (ground-truth `expected`) label.
-- **Failed/exec missing treatment:** Failed executions excluded from denominator; not silently counted as pass.
-- **Limitations:** Aggregates across all categories; may mask poor performance on rare categories.
+- **Wilson 95% CI:** approximate Wilson score interval for binomial proportion. For the development pilot, 4/45 false allows gives Wilson interval ≈ 3.5%–20.7% (two-sided 95%). *Verification: Wilson interval formula p̃ = (x + z²/2) / (n + z²) with z = 1.96; for x=4, n=45: p̃ = (4 + 1.92) / (45 + 3.84) = 5.92/48.84 ≈ 0.121; margin = 1.96 × √((0.121×0.879)/45 + (1.96²)/(4×45²)) ≈ 0.086; CI ≈ 0.121 ± 0.086 → 0.035 to 0.207. If calculation cannot be independently verified, mark pending rather than guessing.*
+- **Important distinction:** 94/94 scenarios executed means 100% scenario completion, not 100% decision accuracy. Historical rules-only result was 94/94 scenarios executed (100% completion). Historical rules+judge result was 90/94 correct decisions ≈95.74% decision accuracy.
 
 ### 2. False allows
 
@@ -306,6 +313,12 @@ This is an **exploratory** strategy, not statistically powered. If confirmatory 
 - **Latency:** median (p50), p95, max across scenarios, units (ms). Measured across proxy boundary.
 - **Cost:** per-decision billing units; local model temperature 0, no remote calls → cost = 0.
 - **Missing-data treatment:** scenarios failed before latency measurement excluded from numerator; denominator = successfully completed scenarios.
+
+### 9. Layer A / Layer B separation
+
+- **Layer A** evaluates policy-engine decision quality against expected labels (ALLOW/DENY). Metrics: decision accuracy, false-allow rate, false-deny rate. Layer A must be measured before Layer B.
+- **Layer B** evaluates full proxy enforcement: whether calls are forwarded downstream, denied calls are not forwarded, and fail-closed behavior at the proxy boundary. Layer B is separately measured and must not be inferred from Layer A results.
+- **Layer A decision accuracy must not be described as proof of end-to-end attack prevention.** Layer A shows policy-engine correctness; Layer B addresses whether the proxy correctly enforces the decision downstream. The two layers are independent and separately reported.
 - **Numerator:** count of benign scenarios (categories `benign-basic`, `benign`) where `observed=DENY`.
 - **Denominator:** total count of benign scenarios in the held-out set.
 - **Level:** scenario-level.
