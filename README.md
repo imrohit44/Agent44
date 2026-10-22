@@ -1,85 +1,153 @@
-# Agent44  Transparent MCP stdio Proxy, Observation, and Policy Enforcement
+# Agent44
 
-Agent44 is a reproducible experiment investigating whether a policy/decision
-layer in front of AI-agent tool calls can improve safety, explainability, and
-efficiency.
+Transparent MCP stdio proxy, observation, and policy enforcement.
 
-**Milestone 1** implements a transparent MCP stdio proxy. **Milestone 2** adds
-an observation-only foundation: a typed `CallContext`, a non-intrusive
-observation hook, redacted JSONL logging, a versioned test corpus, and an
-evaluation runner. **Milestone 3** adds a minimal deterministic YAML policy
-engine with `ALLOW`/`DENY` enforcement in the proxy. The evaluation runner
-still runs observation-only: nothing is blocked there.
+Agent44 is a small, reproducible experiment investigating whether a policy and
+decision layer in front of AI-agent tool calls can improve safety, explainability,
+and efficiency.
 
-## Run the demo
+## Overview
 
-```bash
-uv run python -m agent44.proxy -- python -m agent44.demo_server
+The project evaluates a deterministic policy engine positioned between an MCP
+client and downstream tools. The central research question is whether inserting
+a policy tier that validates, tags, and potentially blocks tool calls before they
+reach the agent reduces unsafe or unintended behavior.
+
+## Why this matters
+
+AI agents routinely make tool calls without a structured safety boundary. A
+policy layer can enforce allow-lists, deny-lists, and argument-level checks,
+## How Agent44 works
+
+Agent44 intercepts MCP tools/call requests through a stdio proxy. Before any
+downstream tool execution, a deterministic policy engine evaluates the call:
+
+1. **Argument validation** – argument shapes are checked against expected types
+   and lengths; sensitive fields are redacted in observations.
+2. **Deterministic rule evaluation** – YAML-declared ALLOW/DENY rules are matched
+   using exact field equality and field_exists predicates. Hard-deny lists take
+   absolute precedence.
+3. **Adapter consultation** – if all deterministic tiers return UNDECIDED, a
+   configurable decision adapter (e.g. a probability-threshold model-backed
+   backend) may be consulted.
+4. **Fail-closed** – any adapter timeout, error, or invalid output maps to a
+   distinct DENY rule-id; no adapter output can override a deterministic DENY.
+
+## Architecture
+
+<details>
+<summary>Architecture diagram (Mermaid flowchart)</summary>
+
+```mermaid
+flowchart TD
+    MCPclient[MCP client / request] -->|tools/call| Proxy[Agent44 proxy]
+    Proxy -->|Validate & route| Policy[Deterministic policy engine]
+    Policy -->|ALLOW| Tool[Downstream tool execution]
+    Policy -->|DENY| NoTool[Call denied; isError result]
+    Policy -->|UNDECIDED| Adapter[Decision adapter / backend]
+    Adapter -->|ALLOW| Tool
+    Adapter -->|DENY| NoTool
+    Adapter -->|UNDECIDED| NoTool
+    style HardDeny fill:#ffdddd,stroke:#cc0000
+    style DenyRule fill:#ffe5e5,stroke:#cc4444
+    style Allow fill:#e6ffec,stroke:#44aa55
+    style Undecided fill:#fff4c4,stroke:#aaaa22]
 ```
 
-The command launches Agent44 as an MCP server on stdio. It, in turn, spawns the
-demo server (`agent44.demo_server`) as a downstream subprocess, forwards tool
-discovery and tool calls, and returns results unchanged.
+**Key boundaries:**
+- Deterministic denials (hard-deny lists, explicit DENY rules) are always
+  authoritative; an adapter can never override them.
+- Backend errors, timeouts, and invalid outputs fail closed into DENY with a
+  distinct rule-id bucket.
+## Security model and trust boundaries
 
-Point any MCP stdio client at the above command to talk to Agent44.
+- **Deterministic tiers are trusted.** Hard-deny lists and declared DENY rules
+  are evaluated first and cannot be overridden by an adapter.
+- **Adapters are untrusted.** The threshold adapter, LLM judge, or any remote
+  backend can time out, return malformed output, or return UNDECIDED. Every
+  such outcome is mapped to a DENY with a distinct rule-id; none can produce an
+  ALLOW outside its configured band.
+- **External tool content is untrusted.** Argument values from tool results are
+  never persisted; observations record only safe metadata (type/length summaries).
+- **Fail-closed decisions may reduce availability.** Denials block calls that
+  might otherwise succeed, but this is intentional — the system never silently
+  permits a call that a tier cannot decisively authorize.
+## Current capabilities
 
-## Tests
+- **MCP stdio proxy** – forwards tools/list and tools/call between an MCP client
+  and a downstream server via stdio.
+- **Argument validation** – type/length checks at startup; sensitive fields
+  configurable via agent44.observe.DEFAULT_SENSITIVE_FIELDS.
+- **Deterministic policy engine** – YAML-declared ALLOW/DENY rules with
+  when: equals: (dotted-field scalar match) or when: field_exists: true; hard-deny
+  list; default_deny default.
+- **Probability-threshold adapter** – maps a numeric probability from call
+  arguments to ALLOW (p >= allow_threshold), DENY (p <= deny_threshold), or
+  UNDECIDED (strictly between thresholds).
+- **Observation-only logging** – JSONL logs of tool calls with redacted arguments;
+  raw argument values and raw tool results are never persisted.
+- **Evaluation runner** – replays a versioned corpus through the proxy and
+  produces a machine-readable JSON report (call counts, outcomes, latency
+  percentiles).
+- **Release-check workflow** – single offline command (python release_check.py)
+  that verifies assemble/test/lint/import/hash integrity without network calls.
+## Quick start
+
+### Prerequisites
+
+- Python >=3.11, <3.14
+- [UV](https://astral.sh/uv) (recommended) or pip
+
+### Environment setup
+
+```bash
+# Clone and enter the repository
+git clone <repo-url>
+cd Agent44
+
+# Create a virtual environment (UV recommended)
+uv venv .venv
+source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+
+# Install dependencies
+uv sync  # or: pip install -e ".[dev]"
+```
+
+### Running tests
 
 ```bash
 uv run pytest -q
 uv run ruff check .
 ```
 
-## Observation (Milestone 2)
-
-Run the proxy with an observation log. Observations never change results,
-errors, or protocol behavior; diagnostics stay on stderr and the protocol stays
-on stdout.
+### Running the release check
 
 ```bash
-uv run python -m agent44.proxy --observe obs.jsonl -- python -m agent44.demo_server
+python release_check.py
 ```
 
-Each tool call appends one JSONL record with event type, tool name, timing,
-outcome, and *safe* argument metadata (type/length summaries only). Raw
-argument values and raw tool results are never persisted; sensitive fields
-(configured in `agent44.observe.DEFAULT_SENSITIVE_FIELDS`, e.g. `api_key`,
-`password`, `token`) are recorded as `{"redacted": true}`.
-
-## Evaluation runner
-
-Replays the versioned corpus (`agent44.corpus`) through the proxy and writes a
-machine-readable JSON report.
+### Running the offline evaluation
 
 ```bash
-uv run python -m agent44.eval_runner -o eval_results.json --observe eval_observations.jsonl
+uv run python -m agent44.proxy -- python -m agent44.demo_server
 ```
 
-This is **observation-only** (`"blocking": false`). It reports total calls,
-outcomes, and latency percentiles (min/p50/p95/max). A non-error outcome for an
-adversarial case is **not** a security block  no policy runs in this mode.
-
-## Policy enforcement (Milestone 3)
-
-Pass `--policy PATH` to enable enforcement. Every `tools/call` is evaluated
-*before* it is forwarded downstream:
-
-* `ALLOW`  the call is forwarded unchanged; results and error semantics are
-  preserved exactly as when no policy is configured.
-* `DENY`   the downstream server is **never invoked**. The proxy returns a
-  tool-level `isError` result whose text carries only the static rule id and
-  reason  never raw argument values.
+ Runs the demo server behind the proxy (no policy enforcement).
 
 ```bash
 uv run python -m agent44.proxy --policy policies/demo.yaml -- python -m agent44.demo_server
 ```
 
-Add `--observe obs.jsonl` to record decisions alongside observations. Each
-JSONL record gains `policy_action`, `policy_rule_id`, and `policy_reason`.
-Without `--policy` these fields stay `null`, so an observation-only run can
-never be misread as a policy block.
+ Enables policy enforcement with the demo policy (blocks rm_rf and the eval
+ argument on echo).
 
-### Policy file
+```bash
+uv run python -m agent44.eval_runner -o eval_results.json --observe eval_observations.jsonl
+```
+
+ ## Configuration
+
+Policy files are YAML documents read at proxy startup via `--policy PATH`.
 
 ```yaml
 version: "1"
@@ -97,27 +165,138 @@ rules:
       field_exists: true
 ```
 
-Deterministic precedence, highest first: explicit `deny_tools`  DENY rules
-(first declared wins)  `allow_tools`  ALLOW rules (first declared wins)
- the `default_deny` default. A rule's `when` block takes exactly one of
-`equals:` (type-strict scalar match on a dotted field path) or
-`field_exists: true`.
+- `default_deny` (bool) – if true, any tool not explicitly listed in
+  `allow_tools` is denied unless an ALLOW rule matches.
+- `allow_tools` (list of strings) – tools explicitly allowed; first-declared
+  rule wins for a matching tool.
+- `deny_tools` (list of strings) – tools explicitly denied; first-declared
+  DENY rule wins for a matching tool.
+- `rules[].id` – unique rule identifier; duplicate ids are rejected at startup.
+- `rules[].tool` – the tool name the rule applies to.
+- `rules[].action` – must be `ALLOW` or `DENY` (any other value causes a
+  startup error).
+- `rules[].reason` – free-text string carried in the `isError` result for DENY
+  decisions.
+- `rules[].when` – condition that must be satisfied for the rule to fire;
+  exactly one of `equals:` (type-strict scalar match on a dotted field path)
+  or `field_exists: true`.
+- `rules[].when.equals:` – takes a value literal of the appropriate Python
+  type (string, integer, boolean) for type-strict comparison against the
+  corresponding dotted field in the call arguments.
 
-`REVIEW` is deliberately **not** a valid action: there is no silently
-permissive fallback and no dependency on a reviewer being available.
+## Benchmark methodology and metrics
 
-Validation is strict and happens at startup. An unknown action, malformed
-rule, invalid field path, duplicate rule id, a tool listed in both
-`allow_tools` and `deny_tools`, an unsupported version, an unknown key, or a
-missing/unreadable file causes a non-zero exit with `policy error` on stderr
- enforcement never silently starts disabled. If evaluation itself throws at
-runtime the proxy fails closed and denies the call.
+The evaluation uses a versioned synthetic corpus (`agent44.corpus`) comprising
+development scenarios that cover policy-eligible and adversarial tool-call cases.
+Each scenario specifies expected deterministic rule behavior and provenance
+tracking. The corpus is replayed through the proxy, and outcomes are recorded.
 
-### Enforced demo run
+**Metrics reported:**
+- Total calls, allowed, denied
+- Decision accuracy (agreement between the engine's decision and the expected
+  decision per scenario)
+- False-block rate (0.0 = no tool hard-denied or DENY-ruled when ALLOW was
+  expected)
+## Current experimental findings
 
-```bash
-uv run python demo_enforce.py
+All results below come from synthetic development experiments. Scenarios are not
+generalizable beyond the development corpus.
+
+**Rules-only condition** (94 scenarios, development partition):
+
+- Decision accuracy: 94/94 (1.000) — every scenario's expected decision matched
+  the deterministic policy's output.
+- False-block rate: 0/94 (0.0)
+- False-allow rate: 0/94 (0)
+
+**Rules plus local judge condition** (94 scenarios, development partition;
+
+- Decision accuracy: 90/94 (~0.957), four false allows relative to expected
+  labels.
+- The judge was consulted on 6 scenarios (18 model calls across 3 trials per
+  scenario). Of the 94 scenarios, 88 were decided solely by deterministic rules
+  with `adapter=None`; the judge was not consulted for these.
+- The local judge did not improve decision accuracy in this experiment.
+- Four false allows occurred when the deterministic policy returned
+  UNDECIDED and the judge returned ALLOW despite the expected label being DENY.
+  These scenarios included ambiguous-adversarial, adapter-failure, ambiguous-label,
+  and prompt-injection categories.
+- Jev and ScaleDown adapters are implemented and documentation-verified, but no
+  comparative live results are claimed for them while they remain unavailable.
+
+**Important caveats:**
+
+- Scenarios are synthetic and development results do not establish generalization.
+- Tool-call blocking is not proof of end-to-end attack prevention.
+- A passing test suite is not proof of production-grade security.
+- Cost and latency claims apply only to the measured configuration.
+**Important caveats:**
+
+- Scenarios are synthetic and development results do not establish generalization.
+- Tool-call blocking is not proof of end-to-end attack prevention.
+- A passing test suite is not proof of production-grade security.
+- Cost and latency claims apply only to the measured configuration.
+- Held-out evaluation has not yet been authorized or performed.
+
+## Limitations and threat model
+
+- The synthetic development corpus does not represent all possible tool-call
+  patterns or adversarial inputs.
+- Threshold adapter probability is read from call arguments; it does not itself
+  score or model anything. A model-backed scoring backend can be added later
+  behind the same `DecisionAdapter` seam.
+- The local judge uses a versioned, fixed prompt and a strict JSON parser; its
+  behavior with different models or temperatures is untested.
+- Deterministic denials are authoritative, but an insufficiently broad rule set
+  can leave gaps.
+- Fail-closed decisions reduce availability: some calls that could be safe are
+  blocked because no tier could decisively authorize them.
+- External tool content (both arguments and results) is treated as untrusted;
+  ## Security reporting
+
+This project is an experimental security research implementation. If you
+discover a vulnerability, **do not** disclose it in a public issue tracker.
+
+Report vulnerabilities privately by opening a private security advisory through
+the repository's security settings (if available) or by contacting the maintainers
+directly. Include:
+
+- A clear description of the issue, including the policy configuration and
+  corpus scenario involved.
+- Steps to reproduce the observed behavior.
+- The expected and actual decisions, with scenario identifiers.
+- Any relevant logs or evaluation artifacts.
+
+Public issue trackers should not be used to disclose exploitable vulnerabilities
+before maintainers can respond.
+
+## License
+
+Copyright 2026 Agent44 contributors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+## Contributing
+
+See `CONTRIBUTING.md` for guidelines on setting up the development environment,
+coding and formatting expectations, how to run focused tests and the full suite,
+how to add a synthetic scenario, and requirements for preserving benchmark integrity.
+
+## Acknowledgements
+
+The MCP stdio proxy architecture draws on the Model Context Protocol (MCP)
+specification. The policy engine uses YAML for declarative rule definitions.
+Observation logging uses JSONL with redaction consistent with privacy best
+practices.
 ```
-
-Six real MCP calls through the proxy with `policies/demo.yaml`:
-`allowed=2 denied=4 total=6`.
+</details>
